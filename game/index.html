@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solmar — Open-World Crime</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="1280" height="800"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div id="hud-left">
+      <div id="health-row"><span class="hud-label">HEALTH</span><div id="health-bar"><div id="health-fill"></div></div></div>
+      <div id="money-row"><span id="money">$0</span><span id="ammo"></span></div>
+      <div id="wanted-row"></div>
+    </div>
+    <div id="hud-right">
+      <canvas id="minimap" width="200" height="200"></canvas>
+      <div id="speed"></div>
+    </div>
+    <div id="objective"><span id="objective-title"></span><span id="objective-text"></span><span id="objective-dist"></span></div>
+    <div id="toast"></div>
+    <div id="hint">WASD move &middot; Mouse aim &middot; Click shoot &middot; E enter car &middot; Shift sprint &middot; Space punch &middot; P pause &middot; M mute</div>
+  </div>
+
+  <!-- Start screen -->
+  <div id="menu">
+    <div id="menu-inner">
+      <div id="menu-kicker">A SUN-SOAKED OPEN-WORLD CRIME GAME</div>
+      <h1 id="menu-title">SOLMAR</h1>
+      <div id="menu-sub">One driver. One city. Five jobs. No way out but through.</div>
+      <p id="menu-story">Danny Voss came back to Solmar owing the wrong people money. Mara, the fixer at the
+      Rusty Anchor, has five jobs that will clear the debt — if the Solmar police don't clear
+      Danny first. Steal cars, outrun the law, and take the Big Score.</p>
+      <div id="menu-buttons">
+        <button id="btn-start">START ENGINE</button>
+        <button id="btn-continue" class="hidden">CONTINUE</button>
+      </div>
+      <div id="menu-controls">
+        <div><b>WASD / Arrows</b> move &amp; drive</div>
+        <div><b>Mouse</b> aim &middot; <b>Click</b> shoot</div>
+        <div><b>E</b> steal / enter car</div>
+        <div><b>Shift</b> sprint</div>
+        <div><b>Space</b> punch &middot; handbrake in a car</div>
+        <div><b>P</b> pause &middot; <b>M</b> mute &middot; <b>R</b> restart mission</div>
+      </div>
+      <div id="menu-foot">An original game. Solmar, its people and its story are invented — no real city, no real gang, no borrowed game.</div>
+    </div>
+  </div>
+
+  <!-- Pause screen -->
+  <div id="pause" class="hidden">
+    <div class="panel">
+      <h2>PAUSED</h2>
+      <button id="btn-resume">RESUME</button>
+      <button id="btn-save">SAVE GAME</button>
+      <button id="btn-restart-mission">RESTART MISSION</button>
+      <button id="btn-quit">QUIT TO MENU</button>
+      <div id="save-note"></div>
+    </div>
+  </div>
+
+  <!-- Busted / wasted / mission complete -->
+  <div id="banner" class="hidden"><div id="banner-title"></div><div id="banner-sub"></div><div id="banner-hint">Press Enter to continue</div></div>
+
+  <!-- Mission phone call -->
+  <div id="phone" class="hidden">
+    <div id="phone-name"></div>
+    <div id="phone-text"></div>
+    <button id="phone-ok">GOT IT</button>
+  </div>
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
