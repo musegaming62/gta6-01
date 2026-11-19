@@ -167,11 +167,16 @@ function stageShot(shot) {
   const p = G.player;
   if (shot === 'drive') {
     const car = makeCar(1400, 1400, 0, 'sport', 'player');
+    car.color = '#e63946';
     car.speed = 300;
     G.cars.push(car);
     p.car = car; p.x = car.x; p.y = car.y;
+    // A job in progress: the stolen car is on its way to the chop shop.
+    G.mission = { def: MISSIONS[0], index: 0, step: 1, spawned: false, ricoInCar: false, kills: 0 };
+    G.markers = [{ x: PLACES.chopshop.x, y: PLACES.chopshop.y, label: "Big Ray's Chop Shop" }];
   } else if (shot === 'chase') {
     const car = makeCar(1400, 1400, 0, 'sport', 'player');
+    car.color = '#e63946';
     car.speed = 320;
     G.cars.push(car);
     p.car = car; p.x = car.x; p.y = car.y;
@@ -184,15 +189,18 @@ function stageShot(shot) {
     G.markers = [{ x: PLACES.safehouse.x, y: PLACES.safehouse.y, label: 'Safehouse' }];
   } else if (shot === 'mission') {
     const car = makeCar(PLACES.motel.x - 120, 2200, Math.PI / 2, 'sedan', 'player');
+    car.color = '#e63946';
     G.cars.push(car);
     p.car = car; p.x = car.x; p.y = car.y;
     G.mission = { def: MISSIONS[2], index: 2, step: 0, spawned: false, ricoInCar: false, kills: 0 };
     G.markers = [{ x: PLACES.motel.x, y: PLACES.motel.y, label: 'Palm Court Motel' }];
     setWanted(1, '');
   } else if (shot === 'combat') {
-    p.x = PLACES.warehouse.x - 120; p.y = PLACES.warehouse.y + 40;
-    p.angle = 0;
+    p.x = PLACES.warehouse.x - 150; p.y = PLACES.warehouse.y + 30;
+    p.angle = Math.atan2(PLACES.warehouse.y - p.y, PLACES.warehouse.x - p.x);
     G.ammo = 48;
+    // Aim the crosshair at the nearest Vulture so the shot reads as a firefight.
+    G.mouse.x = 760; G.mouse.y = 360;
     G.mission = { def: MISSIONS[3], index: 3, step: 1, spawned: true, ricoInCar: false, kills: 1 };
     G.markers = [{ x: PLACES.warehouse.x, y: PLACES.warehouse.y, label: 'Vulture Warehouse' }];
     const spots = [
@@ -251,12 +259,15 @@ function update(dt) {
     updatePlayer(dt);
     updateWanted(dt);
     updateMission(dt);
-    // Camera follows the player, zooming out a little at speed.
+    // Camera follows the player, zooming out a little at speed, never past the world edge.
     const p = G.player;
     const targetZoom = p.car ? 0.82 : 1;
     cam.zoom = lerp(cam.zoom, targetZoom, dt * 2);
     cam.x = lerp(cam.x, p.x, Math.min(1, dt * 5));
     cam.y = lerp(cam.y, p.y, Math.min(1, dt * 5));
+    const halfW = VW / 2 / cam.zoom, halfH = VH / 2 / cam.zoom;
+    cam.x = clamp(cam.x, halfW, WORLD - halfW);
+    cam.y = clamp(cam.y, halfH, WORLD - halfH);
     // Busted / wasted banners.
     if (G.mode === 'busted' || G.mode === 'wasted' || G.mode === 'done') showBanner();
   } else {
@@ -391,3 +402,6 @@ function districtName(x, y) {
 }
 
 boot();
+
+// Debug hook for play-testing: the live state, readable from the console.
+window.__solmar = G;

@@ -69,8 +69,8 @@ export function generateCity() {
         }
         continue;
       }
-      // 1-3 buildings per block.
-      const n = district === 'downtown' ? (rng() < 0.5 ? 1 : 2) : 1 + Math.floor(rng() * 2);
+      // 2-3 buildings per block, so the city reads dense from above.
+      const n = district === 'downtown' ? 2 + Math.floor(rng() * 2) : 2 + Math.floor(rng() * 2);
       const cols = ROOF_COLORS[district];
       for (let b = 0; b < n; b++) {
         const bw = 70 + rng() * 110;
