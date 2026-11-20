@@ -3,77 +3,59 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Solmar — Open-World Crime</title>
-<link rel="icon" href="data:,">
+<title>Solmar — Open-World Crime Game</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="wrap">
-  <canvas id="game" width="1280" height="800"></canvas>
+<canvas id="game"></canvas>
 
-  <!-- HUD -->
-  <div id="hud" class="hidden">
-    <div id="hud-left">
-      <div id="health-row"><span class="hud-label">HEALTH</span><div id="health-bar"><div id="health-fill"></div></div></div>
-      <div id="money-row"><span id="money">$0</span><span id="ammo"></span></div>
-      <div id="wanted-row"></div>
-    </div>
-    <div id="hud-right">
-      <canvas id="minimap" width="200" height="200"></canvas>
-      <div id="speed"></div>
-    </div>
-    <div id="objective"><span id="objective-title"></span><span id="objective-text"></span><span id="objective-dist"></span></div>
-    <div id="toast"></div>
-    <div id="hint">WASD move &middot; Mouse aim &middot; Click shoot &middot; E enter car &middot; Shift sprint &middot; Space punch &middot; P pause &middot; M mute</div>
+<div id="hud" class="hidden">
+  <div id="hud-top">
+    <div id="health-bar"><div id="health-fill"></div><span id="health-text">100 HP</span></div>
+    <div id="money">$0</div>
+    <div id="stars">☆☆☆☆☆</div>
+    <div id="ammo">AMMO 48</div>
   </div>
+  <div id="objective">Talk to Mara — press N for the next job</div>
+  <div id="timer" class="hidden">1:15</div>
+  <div id="message" class="hidden"></div>
+  <div id="banner" class="hidden"></div>
+  <canvas id="minimap" width="180" height="180"></canvas>
+  <div id="controls-hint">WASD move · Shift sprint · Mouse aim · Click shoot · R reload · F punch · E enter/exit car · P pause · M mute</div>
+</div>
 
-  <!-- Start screen -->
-  <div id="menu">
-    <div id="menu-inner">
-      <div id="menu-kicker">A SUN-SOAKED OPEN-WORLD CRIME GAME</div>
-      <h1 id="menu-title">SOLMAR</h1>
-      <div id="menu-sub">One driver. One city. Five jobs. No way out but through.</div>
-      <p id="menu-story">Danny Voss came back to Solmar owing the wrong people money. Mara, the fixer at the
-      Rusty Anchor, has five jobs that will clear the debt — if the Solmar police don't clear
-      Danny first. Steal cars, outrun the law, and take the Big Score.</p>
-      <div id="menu-buttons">
-        <button id="btn-start">START ENGINE</button>
-        <button id="btn-continue" class="hidden">CONTINUE</button>
-      </div>
-      <div id="menu-controls">
-        <div><b>WASD / Arrows</b> move &amp; drive</div>
-        <div><b>Mouse</b> aim &middot; <b>Click</b> shoot</div>
-        <div><b>E</b> steal / enter car</div>
-        <div><b>Shift</b> sprint</div>
-        <div><b>Space</b> punch &middot; handbrake in a car</div>
-        <div><b>P</b> pause &middot; <b>M</b> mute &middot; <b>R</b> restart mission</div>
-      </div>
-      <div id="menu-foot">An original game. Solmar, its people and its story are invented — no real city, no real gang, no borrowed game.</div>
-    </div>
+<div id="menu" class="overlay">
+  <h1 id="menu-title">SOLMAR</h1>
+  <p id="menu-sub">Danny Voss owes money. Mara has jobs. Take the city.</p>
+  <p class="menu-desc">An open-world crime game: explore the coastal city of Solmar on foot and by car,
+  steal cars, outrun the police, and run five jobs for Mara — from a chop-shop car theft
+  to the Solmar National Bank.</p>
+  <div class="menu-buttons">
+    <button id="btn-start">Start</button>
+    <button id="btn-continue">Continue</button>
   </div>
+  <p class="menu-controls">WASD move · Shift sprint · Mouse aim · Click shoot · R reload · F punch · E car · P pause</p>
+</div>
 
-  <!-- Pause screen -->
-  <div id="pause" class="hidden">
-    <div class="panel">
-      <h2>PAUSED</h2>
-      <button id="btn-resume">RESUME</button>
-      <button id="btn-save">SAVE GAME</button>
-      <button id="btn-restart-mission">RESTART MISSION</button>
-      <button id="btn-quit">QUIT TO MENU</button>
-      <div id="save-note"></div>
-    </div>
-  </div>
-
-  <!-- Busted / wasted / mission complete -->
-  <div id="banner" class="hidden"><div id="banner-title"></div><div id="banner-sub"></div><div id="banner-hint">Press Enter to continue</div></div>
-
-  <!-- Mission phone call -->
-  <div id="phone" class="hidden">
-    <div id="phone-name"></div>
-    <div id="phone-text"></div>
-    <button id="phone-ok">GOT IT</button>
+<div id="pause" class="overlay hidden">
+  <h1>PAUSED</h1>
+  <p>Take a breath. Solmar waits.</p>
+  <div class="menu-buttons">
+    <button id="btn-resume">Resume</button>
+    <button id="btn-restart">Restart mission</button>
+    <button id="btn-quit">Quit to menu</button>
   </div>
 </div>
+
+<div id="end" class="overlay hidden">
+  <h1 id="end-title">BUSTED</h1>
+  <p id="end-text"></p>
+  <div class="menu-buttons">
+    <button id="btn-retry">Retry mission</button>
+    <button id="btn-menu">Main menu</button>
+  </div>
+</div>
+
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

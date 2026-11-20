@@ -1,4 +1,5 @@
 // Solmar: an open-world crime game (Node 22, standard library only). The game is this
+// Round 3 note: game/ was built from scratch in this recording, line by line.
 // directory's game/ folder, plain static files a desktop browser loads offline
 // (game/index.html and its ES modules, no library and no network request), and the program
 // hands it in. It copies game/ and screenshots/ from beside this file to /output and writes

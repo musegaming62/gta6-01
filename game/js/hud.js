@@ -1,121 +1,203 @@
-// Solmar — the HUD: DOM readouts (health, money, wanted stars, ammo, objective, speed)
-// and the canvas minimap with roads, the player, police, traffic and the mission marker.
-import { G, WORLD, ROAD_AT } from './state.js';
-import { fmtMoney, fmtDist, clamp } from './utils.js';
-import { objectiveText, markerPos } from './missions.js';
-import { CAR_MODELS } from './cars.js';
+// HUD: health, money, wanted stars, ammo, objective and timer as DOM, plus a
+// canvas minimap, mission banners, Mara's messages, and the menu screens.
+import { formatMoney, formatTime, clamp } from './util.js';
+import { WORLD_SIZE } from './world.js';
+import { currentStage } from './missions.js';
 
-let minimapCtx = null;
-let lastStars = -1;
-
-export function initHud() {
-  const mm = document.getElementById('minimap');
-  if (mm) minimapCtx = mm.getContext('2d');
+export function createHud() {
+  return {
+    el: {},
+    bannerTimer: 0,
+    messageTimer: 0,
+  };
 }
 
-export function updateHud() {
-  const healthFill = document.getElementById('health-fill');
-  if (healthFill) healthFill.style.width = clamp((G.health / G.maxHealth) * 100, 0, 100) + '%';
-  const money = document.getElementById('money');
-  if (money) money.textContent = fmtMoney(G.money);
-  const ammo = document.getElementById('ammo');
-  if (ammo) ammo.textContent = G.player && G.player.car ? 'DRIVING' : 'AMMO ' + G.ammo;
-  const speed = document.getElementById('speed');
-  if (speed) {
-    if (G.player && G.player.car) {
-      const m = CAR_MODELS[G.player.car.model];
-      const kmh = Math.round((Math.abs(G.player.car.speed) / m.maxSpeed) * 180);
-      speed.textContent = kmh + ' km/h';
-    } else {
-      speed.textContent = '';
-    }
+export function bindHud(H, doc) {
+  const ids = ['hud', 'health-fill', 'health-text', 'money', 'stars', 'ammo', 'objective',
+    'timer', 'message', 'banner', 'minimap', 'menu', 'menu-title', 'menu-sub',
+    'btn-start', 'btn-continue', 'btn-resume', 'btn-restart', 'btn-quit',
+    'pause', 'end', 'end-title', 'end-text', 'btn-retry', 'btn-menu'];
+  for (const id of ids) {
+    const el = doc.getElementById(id);
+    if (el) H.el[id] = el;
   }
-  // Wanted stars, rebuilt only when the level changes.
-  if (G.wanted !== lastStars) {
-    lastStars = G.wanted;
-    const row = document.getElementById('wanted-row');
-    if (row) {
-      row.innerHTML = '';
-      for (let i = 0; i < 5; i++) {
-        const s = document.createElement('span');
-        s.className = 'star' + (i < G.wanted ? '' : ' off');
-        s.textContent = '★';
-        row.appendChild(s);
-      }
-    }
-  }
-  const obj = objectiveText();
-  const t = document.getElementById('objective-title');
-  const x = document.getElementById('objective-text');
-  const d = document.getElementById('objective-dist');
-  if (t) t.textContent = obj.title;
-  if (x) x.textContent = obj.text;
-  if (d) d.textContent = obj.dist;
 }
 
-export function drawMinimap() {
-  if (!minimapCtx) return;
-  const ctx = minimapCtx;
-  const S = 200 / WORLD;
-  const city = G.city;
-  ctx.clearRect(0, 0, 200, 200);
-  // Water + sand.
-  ctx.fillStyle = '#2e86ab';
-  ctx.fillRect(0, city.waterY * S, 200, 200 - city.waterY * S);
-  ctx.fillStyle = '#e8d5a3';
-  ctx.fillRect(0, city.beachY * S, 200, (city.waterY - city.beachY) * S);
-  // Ground.
-  ctx.fillStyle = '#5d7d4a';
-  ctx.fillRect(0, 0, 200, city.beachY * S);
-  // Buildings as dark dots.
-  ctx.fillStyle = 'rgba(20,24,32,0.8)';
-  for (const b of city.buildings) {
-    ctx.fillRect(b.x * S, b.y * S, Math.max(1.5, b.w * S), Math.max(1.5, b.h * S));
+export function showMenu(H, G) {
+  H.el['menu'].classList.remove('hidden');
+  H.el['pause'].classList.add('hidden');
+  H.el['end'].classList.add('hidden');
+  H.el['hud'].classList.add('hidden');
+  H.el['menu-title'].textContent = 'SOLMAR';
+  H.el['menu-sub'].textContent = 'Danny Voss owes money. Mara has jobs. Take the city.';
+  const hasSave = G.save.hasSave();
+  H.el['btn-continue'].style.display = hasSave ? 'inline-block' : 'none';
+  H.el['btn-start'].textContent = hasSave ? 'New Game' : 'Start';
+}
+
+export function hideMenu(H) {
+  H.el['menu'].classList.add('hidden');
+  H.el['hud'].classList.remove('hidden');
+}
+
+export function showPause(H) {
+  H.el['pause'].classList.remove('hidden');
+}
+
+export function hidePause(H) {
+  H.el['pause'].classList.add('hidden');
+}
+
+export function showBusted(H) {
+  showEnd(H, 'BUSTED', 'The Solmar PD caught up with Danny. Mara is already working on bail.');
+}
+
+export function showWasted(H) {
+  showEnd(H, 'WASTED', 'Danny is down. The city keeps moving without him.');
+}
+
+export function showWin(H) {
+  showEnd(H, 'THE BIG SCORE', 'Danny sails out of Solmar harbour $5,000 richer. Mara is already planning the next job.');
+}
+
+function showEnd(H, title, text) {
+  H.el['end'].classList.remove('hidden');
+  H.el['end-title'].textContent = title;
+  H.el['end-text'].textContent = text;
+  H.el['btn-retry'].style.display = title === 'THE BIG SCORE' ? 'none' : 'inline-block';
+}
+
+export function hideEnd(H) {
+  H.el['end'].classList.add('hidden');
+}
+
+export function showBanner(H, text) {
+  H.el['banner'].textContent = text;
+  H.el['banner'].classList.remove('hidden');
+  H.bannerTimer = 3.2;
+}
+
+export function showMessage(H, text, seconds) {
+  H.el['message'].textContent = text;
+  H.el['message'].classList.remove('hidden');
+  H.messageTimer = seconds || 5;
+}
+
+export function updateHud(H, G, dt) {
+  if (H.bannerTimer > 0) {
+    H.bannerTimer -= dt;
+    if (H.bannerTimer <= 0) H.el['banner'].classList.add('hidden');
   }
-  // Roads.
-  ctx.strokeStyle = '#c9c2b2';
-  ctx.lineWidth = 2;
-  for (const r of ROAD_AT) {
-    ctx.beginPath(); ctx.moveTo(0, r * S); ctx.lineTo(200, r * S); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(r * S, 0); ctx.lineTo(r * S, 200); ctx.stroke();
+  if (H.messageTimer > 0) {
+    H.messageTimer -= dt;
+    if (H.messageTimer <= 0) H.el['message'].classList.add('hidden');
   }
-  // Mission marker: pulsing yellow diamond.
-  const m = markerPos();
-  if (m) {
-    const pulse = 4 + Math.sin(G.time * 5) * 2;
-    ctx.fillStyle = '#ffd166';
-    ctx.save();
-    ctx.translate(m.x * S, m.y * S);
-    ctx.rotate(Math.PI / 4);
-    ctx.fillRect(-pulse / 2, -pulse / 2, pulse, pulse);
-    ctx.restore();
-  }
-  // Traffic: faint white dots.
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  for (const car of G.cars) {
-    if (car.kind === 'traffic') ctx.fillRect(car.x * S - 1, car.y * S - 1, 2, 2);
-  }
-  // Police: red dots.
-  ctx.fillStyle = '#ff2d2d';
-  for (const car of G.cars) {
-    if (car.kind === 'police' && !car.wreck) {
-      ctx.beginPath(); ctx.arc(car.x * S, car.y * S, 2.5, 0, Math.PI * 2); ctx.fill();
-    }
-  }
-  // Player: white arrow.
   const p = G.player;
-  if (p) {
-    ctx.save();
-    ctx.translate(p.x * S, p.y * S);
-    ctx.rotate(p.angle);
-    ctx.fillStyle = '#fff';
-    ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath(); ctx.fill();
-    ctx.restore();
+  H.el['health-fill'].style.width = clamp(p.health, 0, 100) + '%';
+  H.el['health-text'].textContent = Math.ceil(p.health) + ' HP';
+  H.el['money'].textContent = formatMoney(p.money);
+  const stars = Math.floor(G.police.wanted);
+  let starHtml = '';
+  for (let i = 0; i < 5; i++) {
+    starHtml += i < stars ? '★' : '☆';
   }
-  // Viewport frame.
-  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  H.el['stars'].textContent = starHtml;
+  H.el['stars'].style.color = stars > 0 ? '#ffd94d' : '#cccccc';
+  H.el['ammo'].textContent = p.inCar ? 'DRIVING' : 'AMMO ' + p.ammo;
+  H.el['objective'].textContent = G.missions.active
+    ? objectiveText(G.missions)
+    : 'Talk to Mara — press N for the next job';
+  if (G.missions.active && G.missions.timer > 0) {
+    H.el['timer'].textContent = formatTime(G.missions.timer);
+    H.el['timer'].classList.remove('hidden');
+  } else if (G.missions.active && G.missions.holdTimer > 0) {
+    H.el['timer'].textContent = 'HOLD ' + Math.ceil(G.missions.holdTimer) + 's';
+    H.el['timer'].classList.remove('hidden');
+  } else {
+    H.el['timer'].classList.add('hidden');
+  }
+  drawMinimap(H, G);
+}
+
+function drawMinimap(H, G) {
+  const cv = H.el['minimap'];
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const S = cv.width;
+  const scale = S / WORLD_SIZE;
+  ctx.clearRect(0, 0, S, S);
+  // Water and ground.
+  ctx.fillStyle = '#2f6fb0';
+  ctx.fillRect(0, S * 3080 / WORLD_SIZE, S, S - S * 3080 / WORLD_SIZE);
+  ctx.fillStyle = '#6b7a5d';
+  ctx.fillRect(0, 0, S, S * 2920 / WORLD_SIZE);
+  ctx.fillStyle = '#e0cd96';
+  ctx.fillRect(0, S * 2920 / WORLD_SIZE, S, S * 160 / WORLD_SIZE);
+  // Roads.
+  ctx.fillStyle = '#3d3d42';
+  for (const c of [300, 700, 1100, 1500, 1900, 2300, 2700]) {
+    ctx.fillRect(c * scale - 2, 0, 4, S);
+    ctx.fillRect(0, c * scale - 2, S, 4);
+  }
+  // Mission marker.
+  const target = missionTarget(G);
+  if (target) {
+    const pulse = 4 + Math.sin(G.time * 5) * 1.5;
+    ctx.fillStyle = '#ffd94d';
+    ctx.beginPath();
+    ctx.arc(target.x * scale, target.y * scale, pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    ctx.arc(target.x * scale, target.y * scale, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Police dots.
+  ctx.fillStyle = '#2d7dff';
+  for (const p of G.peds) {
+    if (p.isCop && !p.dead) {
+      ctx.fillRect(p.x * scale - 1.5, p.y * scale - 1.5, 3, 3);
+    }
+  }
+  for (const c of G.cars) {
+    if (c.isPolice && !c.dead) {
+      ctx.fillRect(c.x * scale - 1.5, c.y * scale - 1.5, 3, 3);
+    }
+  }
+  // Player arrow.
+  const p = G.player;
+  ctx.save();
+  ctx.translate(p.x * scale, p.y * scale);
+  ctx.rotate(p.angle);
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.moveTo(6, 0);
+  ctx.lineTo(-4, -4);
+  ctx.lineTo(-4, 4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  // Viewport box.
+  ctx.strokeStyle = 'rgba(255,255,255,0.65)';
   ctx.lineWidth = 1;
-  const cam = G.camera;
-  const vw = 1280 / cam.zoom * S, vh = 800 / cam.zoom * S;
-  ctx.strokeRect((cam.x - 640 / cam.zoom) * S, (cam.y - 400 / cam.zoom) * S, vw, vh);
+  ctx.strokeRect(
+    (G.camera.x - G.view.w / 2) * scale,
+    (G.camera.y - G.view.h / 2) * scale,
+    G.view.w * scale,
+    G.view.h * scale
+  );
+}
+
+function missionTarget(G) {
+  const M = G.missions;
+  if (!M.active) return null;
+  const st = currentStage(M);
+  return st ? st.target : null;
+}
+
+function objectiveText(M) {
+  const st = currentStage(M);
+  if (!st) return 'All missions complete. Solmar is yours.';
+  if (st.type === 'kill') return 'Defeat the Vulture gang (' + M.gangLeft + ' left)';
+  return st.label;
 }

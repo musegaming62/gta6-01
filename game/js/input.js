@@ -1,39 +1,78 @@
-// Solmar — keyboard and mouse input, kept in one place.
-import { G } from './state.js';
+// Keyboard and mouse state. Tracks held keys, edge-triggered presses, and the
+// mouse position in screen and world coordinates. No dependencies.
+export class Input {
+  constructor(canvas) {
+    this.keys = new Set();
+    this.pressed = new Set();
+    this.mouseX = 0;
+    this.mouseY = 0;
+    this.mouseDown = false;
+    this.mouseClicked = false;
+    this.canvas = canvas;
 
-export function initInput(canvas, onKey) {
-  const keys = G.keys;
-  const norm = (e) => e.key.toLowerCase();
+    window.addEventListener('keydown', (e) => {
+      if (e.repeat) return;
+      this.keys.add(e.code);
+      this.pressed.add(e.code);
+      // Keep arrows/space from scrolling the page while playing.
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+        e.preventDefault();
+      }
+    });
+    window.addEventListener('keyup', (e) => {
+      this.keys.delete(e.code);
+    });
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this.mouseDown = false;
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      const r = canvas.getBoundingClientRect();
+      this.mouseX = e.clientX - r.left;
+      this.mouseY = e.clientY - r.top;
+    });
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 0) {
+        this.mouseDown = true;
+        this.mouseClicked = true;
+      }
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 0) this.mouseDown = false;
+    });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
 
-  window.addEventListener('keydown', (e) => {
-    if (e.key === ' ' || e.key.startsWith('Arrow')) e.preventDefault();
-    if (!keys[norm(e)]) onKey(norm(e), true);
-    keys[norm(e)] = true;
-  });
-  window.addEventListener('keyup', (e) => {
-    keys[norm(e)] = false;
-    onKey(norm(e), false);
-  });
-  window.addEventListener('blur', () => {
-    for (const k of Object.keys(keys)) keys[k] = false;
-  });
+  down(code) {
+    return this.keys.has(code);
+  }
 
-  canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    G.mouse.x = (e.clientX - rect.left) * (canvas.width / rect.width);
-    G.mouse.y = (e.clientY - rect.top) * (canvas.height / rect.height);
-  });
-  canvas.addEventListener('mousedown', (e) => {
-    if (e.button === 0) G.mouse.down = true;
-  });
-  window.addEventListener('mouseup', () => { G.mouse.down = false; });
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-}
+  // True only on the frame the key went down. Consumed at the end of each frame.
+  hit(code) {
+    return this.pressed.has(code);
+  }
 
-export function axis() {
-  // Returns {x, y} in -1..1 from WASD / arrows.
-  const k = G.keys;
-  const x = (k['d'] || k['arrowright'] ? 1 : 0) - (k['a'] || k['arrowleft'] ? 1 : 0);
-  const y = (k['s'] || k['arrowdown'] ? 1 : 0) - (k['w'] || k['arrowup'] ? 1 : 0);
-  return { x, y };
+  anyHit(codes) {
+    return codes.some((c) => this.pressed.has(c));
+  }
+
+  // WASD or arrows as a -1/0/1 axis pair.
+  axes() {
+    let x = 0;
+    let y = 0;
+    if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
+    if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
+    if (this.down('KeyW') || this.down('ArrowUp')) y -= 1;
+    if (this.down('KeyS') || this.down('ArrowDown')) y += 1;
+    return { x, y };
+  }
+
+  sprinting() {
+    return this.down('ShiftLeft') || this.down('ShiftRight');
+  }
+
+  endFrame() {
+    this.pressed.clear();
+    this.mouseClicked = false;
+  }
 }

@@ -1,151 +1,265 @@
-// Solmar — pedestrians: they stroll the sidewalks, scatter from gunfire and speeding cars,
-// and remember being hit (the wanted system notices).
-import { G, WORLD, ROAD_AT, ROAD_W } from './state.js';
-import { dist, rand, pick, TAU, clamp } from './utils.js';
-import { collideBuildings, clampToWorld } from './world.js';
-import { spawnSparks } from './particles.js';
+// Pedestrians: civilians who walk the sidewalks and flee from violence, and
+// armed gang members who attack on sight during the Payback mission.
+import { clamp, dist, angleTo, randRange, pick, mulberry32 } from './util.js';
+import { ROAD_CENTERS, WORLD_SIZE, collideBuildings, isOnRoad, onBeach } from './world.js';
+import { burst } from './particles.js';
 
-const SHIRTS = ['#e07a5f', '#81b29a', '#f2cc8f', '#3d5a80', '#e63946', '#f4f1de', '#8d6b9e', '#2a9d8f'];
-const PANTS = ['#2b2d42', '#5a5a5a', '#3d5a80', '#6b4226'];
+const SHIRTS = ['#d94f4f', '#4f7dd9', '#4fd97a', '#d9b84f', '#9a4fd9', '#d94fa8', '#4fd9c9', '#e8e8e8'];
+const SKINS = ['#e8b88a', '#c98d5f', '#8a5a3b', '#f0c8a0'];
 
-export function makePed(x, y) {
+let pedId = 0;
+
+export function makePed(x, y, opts) {
+  const o = opts || {};
   return {
-    x, y, angle: rand(0, TAU), speed: rand(28, 52),
-    shirt: pick(SHIRTS), pants: pick(PANTS), skin: pick(['#f1c27d', '#e0ac69', '#c68642', '#8d5524', '#ffdbac']),
-    state: 'walk', // walk | flee | down
-    targetX: x, targetY: y, wait: rand(0, 3),
-    health: 100, fleeTimer: 0,
+    id: ++pedId,
+    x, y,
+    angle: Math.random() * Math.PI * 2,
+    speed: o.speed || randRange(Math.random, 34, 62),
+    shirt: o.shirt || pick(Math.random, SHIRTS),
+    skin: o.skin || pick(Math.random, SKINS),
+    isGang: !!o.isGang,
+    isCop: !!o.isCop,
+    health: o.isGang ? 60 : 30,
+    down: false,
+    downTimer: 0,
+    dead: false,
+    vx: 0,
+    vy: 0,
+    // Walking state.
+    walkAngle: Math.random() * Math.PI * 2,
+    walkTimer: randRange(Math.random, 2, 6),
+    fleeing: 0,
+    fleeX: 0,
+    fleeY: 0,
+    // Gang shooting.
+    shootTimer: randRange(Math.random, 0.5, 1.5),
+    // Cop behaviour.
+    arrestTimer: 0,
   };
 }
 
-function pickStrollTarget(ped) {
-  // Stroll along a sidewalk: pick a point on a nearby road's edge.
-  const road = pick(ROAD_AT);
-  const along = rand(120, WORLD - 120);
-  if (Math.random() < 0.5) {
-    ped.targetX = along;
-    ped.targetY = road + (Math.random() < 0.5 ? ROAD_W / 2 + 14 : -ROAD_W / 2 - 14);
-  } else {
-    ped.targetX = road + (Math.random() < 0.5 ? ROAD_W / 2 + 14 : -ROAD_W / 2 - 14);
-    ped.targetY = along;
+export function spawnPeds(G, n) {
+  const rng = mulberry32(4242);
+  for (let i = 0; i < n; i++) {
+    const px = G.player.x;
+    const py = G.player.y;
+    const x = clamp(px + randRange(rng, -700, 700), 80, WORLD_SIZE - 80);
+    const y = clamp(py + randRange(rng, -700, 700), 80, 2900);
+    if (dist(x, y, px, py) < 160) continue;
+    G.peds.push(makePed(x, y, {}));
   }
 }
 
-function spawnPed() {
-  const p = G.player;
-  for (let tries = 0; tries < 10; tries++) {
-    const road = pick(ROAD_AT);
-    const along = rand(120, WORLD - 120);
-    const side = Math.random() < 0.5;
-    const x = side ? along : road + ROAD_W / 2 + 14;
-    const y = side ? road + ROAD_W / 2 + 14 : along;
-    if (p && dist(x, y, p.x, p.y) < 320) continue;
-    return makePed(x, y);
-  }
-  return null;
-}
-
-export function maintainPeds() {
-  const p = G.player;
-  if (!p) return;
-  // Despawn the far ones.
-  for (let i = G.peds.length - 1; i >= 0; i--) {
-    if (dist(G.peds[i].x, G.peds[i].y, p.x, p.y) > 1400) G.peds.splice(i, 1);
-  }
-  while (G.peds.length < 22) {
-    const ped = spawnPed();
-    if (!ped) break;
-    G.peds.push(ped);
-  }
-}
-
-export function scarePeds(x, y, radius) {
-  for (const ped of G.peds) {
-    if (ped.state === 'down') continue;
-    if (dist(ped.x, ped.y, x, y) < radius) {
-      ped.state = 'flee';
-      ped.fleeTimer = 2.5;
-      const a = Math.atan2(ped.y - y, ped.x - x);
-      ped.targetX = ped.x + Math.cos(a) * 260;
-      ped.targetY = ped.y + Math.sin(a) * 260;
+// A gunshot or explosion nearby makes every civilian run from the source.
+export function scarePeds(G, x, y, radius) {
+  for (const p of G.peds) {
+    if (p.down || p.isGang || p.isCop) continue;
+    if (dist(p.x, p.y, x, y) < radius) {
+      p.fleeing = randRange(Math.random, 2.5, 4.5);
+      p.fleeX = x;
+      p.fleeY = y;
     }
   }
 }
 
-export function updatePeds(dt) {
-  const p = G.player;
-  for (let i = G.peds.length - 1; i >= 0; i--) {
-    const ped = G.peds[i];
-    if (ped.state === 'down') continue;
-    if (ped.fleeTimer > 0) ped.fleeTimer -= dt;
-    else if (ped.state === 'flee') ped.state = 'walk';
+export function updatePeds(G, dt) {
+  const px = G.player.x;
+  const py = G.player.y;
 
-    const speed = ped.state === 'flee' ? ped.speed * 2.6 : ped.speed;
-    const d = dist(ped.x, ped.y, ped.targetX, ped.targetY);
-    if (d < 12) {
-      if (ped.wait > 0) { ped.wait -= dt; continue; }
-      ped.wait = rand(1, 5);
-      pickStrollTarget(ped);
+  // Keep civilians topped up near the player (cap 24).
+  let civ = 0;
+  for (const p of G.peds) if (!p.isGang && !p.isCop && !p.dead) civ++;
+  if (civ < 20 && Math.random() < 0.03) {
+    const a = Math.random() * Math.PI * 2;
+    const r = randRange(Math.random, 500, 750);
+    const x = clamp(px + Math.cos(a) * r, 80, WORLD_SIZE - 80);
+    const y = clamp(py + Math.sin(a) * r, 80, 2900);
+    G.peds.push(makePed(x, y, {}));
+  }
+
+  for (let i = G.peds.length - 1; i >= 0; i--) {
+    const p = G.peds[i];
+    if (p.dead) {
+      p.deadTimer = (p.deadTimer || 0) + dt;
+      if (p.deadTimer > 10) G.peds.splice(i, 1);
       continue;
     }
-    ped.angle = Math.atan2(ped.targetY - ped.y, ped.targetX - ped.x);
-    ped.x += Math.cos(ped.angle) * speed * dt;
-    ped.y += Math.sin(ped.angle) * speed * dt;
-    collideBuildings(G.city, ped, 8);
-    clampToWorld(ped);
-
-    // Run over by a fast car: knocked down, hard.
-    if (p && p.car && p.car.speed > 120 && dist(ped.x, ped.y, p.car.x, p.car.y) < 26) {
-      knockDown(ped, p.car.x, p.car.y, true);
+    if (p.down) {
+      p.downTimer -= dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= Math.pow(0.1, dt);
+      p.vy *= Math.pow(0.1, dt);
+      if (p.downTimer <= 0) {
+        p.down = false;
+        p.health = 30;
+      }
+      continue;
     }
-    for (const car of G.cars) {
-      if (car.kind === 'traffic' && car.speed > 100 && dist(ped.x, ped.y, car.x, car.y) < 24) {
-        knockDown(ped, car.x, car.y, false);
+
+    if (p.isCop) {
+      updateCopPed(G, p, dt);
+    } else if (p.isGang) {
+      updateGangPed(G, p, dt);
+    } else {
+      updateCivilian(G, p, dt);
+    }
+
+    // World bounds and building collision.
+    p.x = clamp(p.x, 30, WORLD_SIZE - 30);
+    p.y = clamp(p.y, 30, 2900);
+    const push = collideBuildings(G.world, p.x, p.y, 12);
+    if (push) {
+      p.x += push.x;
+      p.y += push.y;
+    }
+  }
+}
+
+function updateCivilian(G, p, dt) {
+  let speed = p.speed;
+  let dir = p.walkAngle;
+  if (p.fleeing > 0) {
+    p.fleeing -= dt;
+    dir = angleTo(p.fleeX, p.fleeY, p.x, p.y);
+    speed = 150;
+  } else {
+    p.walkTimer -= dt;
+    if (p.walkTimer <= 0) {
+      p.walkTimer = randRange(Math.random, 2, 6);
+      // Prefer walking along a road or the beach.
+      if (isOnRoad(p.x, p.y) || onBeach(p.x, p.y)) {
+        const axis = Math.random() < 0.5 ? 0 : Math.PI / 2;
+        p.walkAngle = axis + (Math.random() < 0.5 ? 0 : Math.PI);
+      } else {
+        p.walkAngle = Math.random() * Math.PI * 2;
       }
     }
   }
+  p.angle = dir;
+  p.x += Math.cos(dir) * speed * dt;
+  p.y += Math.sin(dir) * speed * dt;
 }
 
-export function knockDown(ped, fromX, fromY, byPlayer) {
-  if (ped.state === 'down') return;
-  ped.state = 'down';
-  ped.health = 0;
-  spawnSparks(ped.x, ped.y, 6);
-  const a = Math.atan2(ped.y - fromY, ped.x - fromX);
-  ped.x += Math.cos(a) * 14;
-  ped.y += Math.sin(a) * 14;
-  if (byPlayer) {
-    import('./wanted.js').then((m) => m.addWanted(1, 'You hit a pedestrian'));
-  }
-}
-
-export function drawPed(ctx, ped) {
-  ctx.save();
-  ctx.translate(ped.x, ped.y);
-  ctx.fillStyle = 'rgba(0,0,0,0.25)';
-  ctx.beginPath(); ctx.ellipse(2, 3, 8, 5, 0, 0, TAU); ctx.fill();
-  if (ped.state === 'down') {
-    ctx.rotate(ped.angle + Math.PI / 2);
-    ctx.fillStyle = ped.pants;
-    ctx.fillRect(-3, -2, 6, 16);
-    ctx.fillStyle = ped.shirt;
-    ctx.fillRect(-4, -12, 8, 11);
-    ctx.fillStyle = ped.skin;
-    ctx.beginPath(); ctx.arc(0, -15, 4, 0, TAU); ctx.fill();
-    ctx.restore();
+function updateGangPed(G, p, dt) {
+  const d = dist(p.x, p.y, G.player.x, G.player.y);
+  if (d > 700) {
+    // Too far to matter: hold position.
     return;
   }
-  ctx.rotate(ped.angle + Math.PI / 2);
-  const bob = Math.sin(G.time * 9 + ped.x) * 1.5;
-  ctx.fillStyle = ped.pants;
-  ctx.fillRect(-3, 2 + bob * 0.4, 2.6, 8);
-  ctx.fillRect(0.4, 2 - bob * 0.4, 2.6, 8);
-  ctx.fillStyle = ped.shirt;
-  ctx.fillRect(-4.5, -6, 9, 9);
-  ctx.fillStyle = ped.skin;
-  ctx.beginPath(); ctx.arc(0, -9, 4.5, 0, TAU); ctx.fill();
-  ctx.fillStyle = '#222';
-  ctx.beginPath(); ctx.arc(0, -10.5, 4.5, Math.PI, 0); ctx.fill();
-  ctx.restore();
-  void clamp;
+  // Chase the player and shoot when in range.
+  p.angle = angleTo(p.x, p.y, G.player.x, G.player.y);
+  if (d > 130) {
+    p.x += Math.cos(p.angle) * 105 * dt;
+    p.y += Math.sin(p.angle) * 105 * dt;
+  }
+  p.shootTimer -= dt;
+  if (p.shootTimer <= 0 && d < 420 && !G.player.inCar) {
+    p.shootTimer = randRange(Math.random, 0.9, 1.6);
+    G.combat.enemyShoot(G, p.x, p.y, p.angle + randRange(Math.random, -0.14, 0.14), 8);
+    G.audio.enemyShot();
+  } else if (p.shootTimer <= 0) {
+    p.shootTimer = 0.4;
+  }
+}
+
+function updateCopPed(G, p, dt) {
+  const d = dist(p.x, p.y, G.player.x, G.player.y);
+  p.angle = angleTo(p.x, p.y, G.player.x, G.player.y);
+  if (d > 60) {
+    const sp = 132;
+    p.x += Math.cos(p.angle) * sp * dt;
+    p.y += Math.sin(p.angle) * sp * dt;
+  }
+  // Arrest: standing next to the player on foot while wanted.
+  if (d < 38 && !G.player.inCar && G.wanted > 0) {
+    p.arrestTimer += dt;
+    if (p.arrestTimer > 1.2) {
+      G.police.busted(G);
+    }
+  } else {
+    p.arrestTimer = 0;
+  }
+  // Cops shoot at the player from a distance.
+  p.shootTimer -= dt;
+  if (p.shootTimer <= 0 && d < 380 && d > 70 && !G.player.inCar) {
+    p.shootTimer = randRange(Math.random, 1.1, 1.9);
+    G.combat.enemyShoot(G, p.x, p.y, p.angle + randRange(Math.random, -0.18, 0.18), 6);
+    G.audio.enemyShot();
+  } else if (p.shootTimer <= 0) {
+    p.shootTimer = 0.5;
+  }
+}
+
+export function damagePed(G, p, dmg, fromX, fromY) {
+  p.health -= dmg;
+  const a = angleTo(fromX, fromY, p.x, p.y);
+  p.x += Math.cos(a) * 8;
+  p.y += Math.sin(a) * 8;
+  if (p.health <= 0 && !p.dead) {
+    p.dead = true;
+    p.deadTimer = 0;
+    burst(G.particles, p.x, p.y, 10, '#ff5d5d', 130, 0.5, 4);
+    if (p.isGang) {
+      G.missions.onGangKilled(G, p);
+    }
+  } else if (!p.isGang && !p.isCop) {
+    p.fleeing = 3;
+    p.fleeX = fromX;
+    p.fleeY = fromY;
+  }
+}
+
+export function drawPeds(ctx, G, cam) {
+  for (const p of G.peds) {
+    if (p.x < cam.x - cam.w / 2 - 40 || p.x > cam.x + cam.w / 2 + 40 ||
+        p.y < cam.y - cam.h / 2 - 40 || p.y > cam.y + cam.h / 2 + 40) continue;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    if (p.dead || p.down) {
+      ctx.rotate(p.angle + Math.PI / 2);
+      ctx.globalAlpha = p.dead ? 0.5 : 0.85;
+    } else {
+      ctx.rotate(p.angle);
+    }
+    // Shadow.
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(1, 2, 11, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Body.
+    ctx.fillStyle = p.isCop ? '#1f2a44' : (p.isGang ? '#3a1f1f' : p.shirt);
+    ctx.beginPath();
+    ctx.arc(0, 0, 10, 0, Math.PI * 2);
+    ctx.fill();
+    // Head.
+    ctx.fillStyle = p.skin;
+    ctx.beginPath();
+    ctx.arc(0, 0, 5.5, 0, Math.PI * 2);
+    ctx.fill();
+    if (!p.dead && !p.down) {
+      // Facing tick (gun for gang/cops).
+      ctx.fillStyle = p.isGang || p.isCop ? '#222' : p.shirt;
+      ctx.fillRect(8, -2, 9, 4);
+      if (p.isCop) {
+        ctx.fillStyle = '#dfe6f0';
+        ctx.fillRect(-3, -11, 6, 3);
+      }
+      if (p.isGang) {
+        ctx.fillStyle = '#c0392b';
+        ctx.beginPath();
+        ctx.arc(0, 0, 12, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    // Gang health bar.
+    if (p.isGang && !p.dead && !p.down) {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(p.x - 14, p.y - 22, 28, 4);
+      ctx.fillStyle = '#e74c3c';
+      ctx.fillRect(p.x - 14, p.y - 22, 28 * Math.max(0, p.health / 60), 4);
+    }
+  }
 }
