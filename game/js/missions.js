@@ -1,249 +1,193 @@
-// The five-mission story. Danny Voss owes money; fixer Mara hands him jobs.
-// A small stage machine: each mission is a list of stages (go to a place, get in
-// a car, deliver, survive a timer, defeat a set of enemies, escape), and the
-// engine advances stages, pays out, and saves progress.
-import { dist } from './util.js';
-import { SPOTS } from './world.js';
-import { makePed } from './peds.js';
-import { floatText } from './particles.js';
-import { addMoney } from './player.js';
+// Solmar — the story and the five missions. Mara, a fixer, hands Danny
+// Voss jobs to pay off a debt. Each mission has stages, an objective marker
+// on the map and minimap, a briefing line, and a cash reward.
 
-export const MISSION_DEFS = [
-  {
-    name: 'Hot Wheels',
-    reward: 500,
-    briefing: 'Mara: Danny, I need a sports car. There is a red one parked downtown. Take it to the chop shop in the Foundry. Try not to get noticed.',
-    stages: [
-      { type: 'enterCar', label: 'Steal the red sports car downtown', target: SPOTS.sportsCar },
-      { type: 'deliverCar', label: 'Deliver the sports car to the chop shop', target: SPOTS.chopShop },
-    ],
-  },
-  {
-    name: 'The Pickup',
-    reward: 400,
-    briefing: 'Mara: A package is waiting in Vista Hills. Pick it up on foot, then drop it in Palm Heights. No shooting unless you have to.',
-    stages: [
-      { type: 'pickup', label: 'Pick up the package in Vista Hills', target: SPOTS.pickupA },
-      { type: 'deliver', label: 'Deliver the package to Palm Heights', target: SPOTS.pickupB },
-    ],
-  },
-  {
-    name: 'Getaway Driver',
-    reward: 600,
-    briefing: 'Mara: The heat is on. Lose the cops and reach the safehouse by the harbour. You have 75 seconds. Drive like you mean it.',
-    timed: 75,
-    startWanted: 2,
-    stages: [
-      { type: 'timed', label: 'Reach the safehouse before the timer runs out', target: SPOTS.safehouse },
-    ],
-  },
-  {
-    name: 'Payback',
-    reward: 800,
-    briefing: 'Mara: The Vultures jumped one of ours in the Foundry. Go to their turf and settle it. All four of them.',
-    stages: [
-      { type: 'goto', label: 'Go to the Vulture turf in the Foundry', target: SPOTS.turf },
-      { type: 'kill', label: 'Defeat the Vulture gang (0 left)', target: SPOTS.turf, count: 4 },
-    ],
-  },
-  {
-    name: 'The Big Score',
-    reward: 5000,
-    briefing: 'Mara: This is it, Danny. Solmar National Bank. Walk in, hold the room for 20 seconds while the cops come, then run to the boat at the harbour. Do not get caught.',
-    stages: [
-      { type: 'holdout', label: 'Hold the bank for 20 seconds', target: SPOTS.bank, hold: 20 },
-      { type: 'escape', label: 'Escape to the harbour boat', target: SPOTS.boat },
-    ],
-  },
+import { S } from './state.js';
+import { dist, clamp } from './util.js';
+import { makeCar, nearestCar } from './cars.js';
+import { spawnGang, nearestPed } from './peds.js';
+import { setWanted, addWanted } from './police.js';
+import { floatText, burst } from './particles.js';
+import { sfxMission, sfxFail, sfxCash } from './audio.js';
+import { spawnPickup } from './player.js';
+
+export const MISSIONS = [
+  { name: 'Hot Wheels', brief: 'Mara: "Steal a sports car and bring it to the chop shop. Quick and clean."', reward: 500 },
+  { name: 'The Pickup', brief: 'Mara: "Grab the package downtown, then run it to the port. No cops, no problems."', reward: 750 },
+  { name: 'Getaway Driver', brief: 'Mara: "The heat is on you already. Lose them and reach the safehouse in time."', reward: 1000 },
+  { name: 'Payback', brief: 'Mara: "The Vultures jumped one of ours. Go to their turf and settle it."', reward: 1500 },
+  { name: 'The Big Score', brief: 'Mara: "The National Bank. Five seconds inside, then run for the boat. This clears your debt."', reward: 5000 },
 ];
 
-export function createMissions() {
-  return {
-    index: 0, // current mission (0..4); 5 means all done
-    stage: 0,
-    timer: 0,
-    holdTimer: 0,
-    gangLeft: 0,
-    gangSpawned: false,
-    done: [false, false, false, false, false],
-    active: false,
-    car: null, // the car a deliver stage cares about
-  };
+let missionCar = null;
+let gang = [];
+
+export function missionObjective() {
+  const L = S.world.landmarks;
+  const m = S.mission;
+  if (m === 0) {
+    if (S.missionStage === 0) return missionCar ? { x: missionCar.x, y: missionCar.y, label: 'Steal the sports car' } : null;
+    return { x: L.chop.x, y: L.chop.y, label: 'Deliver to the Chop Shop' };
+  }
+  if (m === 1) {
+    if (S.missionStage === 0) return { x: L.pickup.x, y: L.pickup.y, label: 'Pick up the package' };
+    return { x: L.dock.x, y: L.dock.y, label: 'Deliver to the Port' };
+  }
+  if (m === 2) return { x: L.safe.x, y: L.safe.y, label: 'Reach the Safehouse' };
+  if (m === 3) return { x: L.turf.x, y: L.turf.y, label: 'Defeat the Vultures' };
+  if (m === 4) {
+    if (S.missionStage === 0) return { x: L.bank.x, y: L.bank.y, label: 'Enter the Bank' };
+    if (S.missionStage === 1) return { x: L.bank.x, y: L.bank.y, label: 'Hold up in progress…' };
+    return { x: L.boat.x, y: L.boat.y, label: 'Escape to the Boat' };
+  }
+  return null;
 }
 
-export function currentDef(M) {
-  return M.index < MISSION_DEFS.length ? MISSION_DEFS[M.index] : null;
-}
-
-export function currentStage(M) {
-  const def = currentDef(M);
-  if (!def) return null;
-  return def.stages[M.stage] || null;
-}
-
-export function objectiveText(M) {
-  const def = currentDef(M);
-  if (!def) return 'All missions complete. Solmar is yours.';
-  const st = currentStage(M);
-  if (!st) return def.name;
-  if (st.type === 'kill') return 'Defeat the Vulture gang (' + M.gangLeft + ' left)';
-  return st.label;
-}
-
-export function startMission(G, index) {
-  const M = G.missions;
-  M.index = index;
-  M.stage = 0;
-  M.timer = 0;
-  M.holdTimer = 0;
-  M.gangLeft = 0;
-  M.gangSpawned = false;
-  M.car = null;
-  M.active = true;
-  const def = currentDef(M);
-  if (!def) return;
-  if (def.timed) M.timer = def.timed;
-  if (def.startWanted) G.police.setWanted(G, def.startWanted);
-  G.hud.showMessage(G, def.briefing, 7);
-  G.save.save(G);
-}
-
-function advanceStage(G) {
-  const M = G.missions;
-  const def = currentDef(M);
-  M.stage += 1;
-  M.holdTimer = 0;
-  if (M.stage >= def.stages.length) {
-    completeMission(G);
-  } else {
-    const st = currentStage(M);
-    if (st) G.hud.showMessage(G, st.label, 4);
+export function startMission(i) {
+  S.mission = i;
+  S.missionStage = 0;
+  S.missionTimer = 0;
+  S.holdup = 0;
+  missionCar = null;
+  gang = [];
+  const M = MISSIONS[i];
+  S.missionMsg = M.brief;
+  S.banner = 'MISSION ' + (i + 1) + ' — ' + M.name.toUpperCase();
+  S.bannerT = 3.2;
+  sfxMission();
+  const L = S.world.landmarks;
+  const p = S.player;
+  if (i === 0) {
+    // A sports car waits two blocks from the player's start.
+    missionCar = makeCar('sport', 1020, 260, 0);
+    S.cars.push(missionCar);
+    spawnPickup(980, 300, 'ammo');
+  } else if (i === 2) {
+    S.missionTimer = 75;
+    setWanted(2);
+  } else if (i === 3) {
+    gang = spawnGang(4, L.turf.x, L.turf.y);
+  } else if (i === 4) {
+    setWanted(0);
   }
 }
 
-function completeMission(G) {
-  const M = G.missions;
-  const def = currentDef(M);
-  M.done[M.index] = true;
-  addMoney(G, def.reward, G.player.x, G.player.y - 30);
-  G.audio.missionDone();
-  G.hud.showBanner(G, def.name + ' complete  +$' + def.reward);
-  G.save.save(G);
-  M.active = false;
-  const next = M.index + 1;
-  if (next >= MISSION_DEFS.length) {
-    // All five done: the game is won when the player reaches the boat already;
-    // mission 5 ends at the boat, so winning is handled by its escape stage.
-    M.index = next;
+function completeMission() {
+  const M = MISSIONS[S.mission];
+  S.money += M.reward;
+  S.stats.missionsDone++;
+  floatText(S.player.x, S.player.y - 26, '+$' + M.reward, '#7be07b');
+  burst(S.player.x, S.player.y, 18, '#ffd34d', 200, 0.7, 3);
+  sfxCash();
+  sfxMission();
+  S.banner = 'MISSION COMPLETE — +$' + M.reward;
+  S.bannerT = 3;
+  // Save progress.
+  try {
+    localStorage.setItem('solmar-save-v1', JSON.stringify({
+      money: S.money, mission: Math.min(S.mission + 1, MISSIONS.length - 1),
+      x: S.player.x, y: S.player.y,
+    }));
+  } catch (e) { /* storage unavailable */ }
+  if (S.mission >= MISSIONS.length - 1) {
+    S.mode = 'win';
     return;
   }
-  // Brief the next job after a short beat.
-  setTimeout(() => {
-    if (G.state !== 'playing') return;
-    startMission(G, next);
-  }, 2600);
+  startMission(S.mission + 1);
 }
 
-export function onEnterCar(G, car) {
-  const M = G.missions;
-  if (!M.active) return;
-  const st = currentStage(M);
-  if (!st) return;
-  if (st.type === 'enterCar' && car.missionCar) {
-    M.car = car;
-    advanceStage(G);
-  }
+export function failMission(reason) {
+  S.mode = 'failed';
+  S.failedReason = reason || 'failed';
+  sfxFail();
 }
 
-export function onGangKilled(G, ped) {
-  const M = G.missions;
-  if (!M.active) return;
-  const st = currentStage(M);
-  if (!st || st.type !== 'kill') return;
-  M.gangLeft = Math.max(0, M.gangLeft - 1);
-  if (M.gangLeft <= 0) advanceStage(G);
-}
-
-function spawnGang(G) {
-  const M = G.missions;
-  if (M.gangSpawned) return;
-  M.gangSpawned = true;
-  const turf = SPOTS.turf;
-  const spots = [
-    { x: turf.x - 70, y: turf.y - 40 },
-    { x: turf.x + 70, y: turf.y - 50 },
-    { x: turf.x - 50, y: turf.y + 70 },
-    { x: turf.x + 60, y: turf.y + 60 },
-  ];
-  for (const s of spots) {
-    const g = makePed(s.x, s.y, { isGang: true, shirt: '#3a1f1f' });
-    G.peds.push(g);
-  }
-  M.gangLeft = 4;
-  G.hud.showMessage(G, 'The Vultures are here. Take them all down.', 4);
-}
-
-export function updateMissions(G, dt) {
-  const M = G.missions;
-  if (!M.active) return;
-  const def = currentDef(M);
-  if (!def) return;
-  const st = currentStage(M);
-  if (!st) return;
-  const p = G.player;
-
-  // Mission 3 timer.
-  if (def.timed) {
-    M.timer -= dt;
-    if (M.timer <= 0) {
-      M.timer = 0;
-      G.hud.showMessage(G, 'Too slow. Mara is not happy — try again.', 4);
-      G.police.clearWanted(G);
-      startMission(G, M.index);
+export function updateMissions(dt) {
+  const p = S.player;
+  if (!p || S.mode !== 'playing') return;
+  const L = S.world.landmarks;
+  const obj = missionObjective();
+  if (S.missionTimer > 0) {
+    S.missionTimer -= dt;
+    if (S.missionTimer <= 0) {
+      S.missionTimer = 0;
+      failMission('time');
       return;
     }
   }
-
-  const d = dist(p.x, p.y, st.target.x, st.target.y);
-
-  if (st.type === 'goto' || st.type === 'pickup' || st.type === 'deliver' || st.type === 'timed' || st.type === 'escape') {
-    if (d < 70) {
-      if (st.type === 'pickup') {
-        G.audio.pickup();
-        floatText(G.particles, p.x, p.y - 24, 'PACKAGE SECURED', '#7dd97a');
+  const m = S.mission;
+  if (m === 0) {
+    if (S.missionStage === 0) {
+      if (p.inCar === missionCar) {
+        S.missionStage = 1;
+        S.missionMsg = 'Mara: "Nice wheels. Now bring it to the chop shop in Portside."';
       }
-      if (st.type === 'escape') {
-        // Reaching the boat ends the game in a win.
-        advanceStage(G);
-        if (G.state === 'playing') {
-          G.state = 'win';
-          G.audio.missionDone();
-          G.hud.showWin(G);
+    } else if (p.inCar === missionCar && dist(p.x, p.y, L.chop.x, L.chop.y) < 70) {
+      completeMission();
+    }
+  } else if (m === 1) {
+    if (S.missionStage === 0) {
+      if (!p.inCar && dist(p.x, p.y, L.pickup.x, L.pickup.y) < 40) {
+        S.missionStage = 1;
+        S.missionMsg = 'Mara: "Package secured. Now the port — and keep it quiet."';
+        floatText(p.x, p.y - 20, 'PACKAGE', '#ffd34d');
+      }
+    } else if (dist(p.x, p.y, L.dock.x, L.dock.y) < 70) {
+      completeMission();
+    }
+  } else if (m === 2) {
+    if (dist(p.x, p.y, L.safe.x, L.safe.y) < 70) {
+      setWanted(0);
+      completeMission();
+    }
+  } else if (m === 3) {
+    const alive = gang.filter((g) => g.state !== 'down').length;
+    if (alive === 0 && gang.length > 0) {
+      completeMission();
+    }
+  } else if (m === 4) {
+    if (S.missionStage === 0) {
+      if (!p.inCar && dist(p.x, p.y, L.bank.x, L.bank.y) < 60) {
+        S.missionStage = 1;
+        S.missionMsg = 'Mara: "Stay inside the bank. Five seconds. The cops are coming."';
+        setWanted(4);
+      }
+    } else if (S.missionStage === 1) {
+      if (dist(p.x, p.y, L.bank.x, L.bank.y) < 80) {
+        S.holdup += dt;
+        if (S.holdup >= 5) {
+          S.missionStage = 2;
+          S.missionMsg = 'Mara: "Got it! Now RUN to the boat at the harbour!"';
+          spawnPickup(L.bank.x, L.bank.y + 60, 'cash', 0);
         }
-        return;
+      } else {
+        S.holdup = Math.max(0, S.holdup - dt * 2);
       }
-      advanceStage(G);
+    } else if (dist(p.x, p.y, L.boat.x, L.boat.y) < 70) {
+      completeMission();
     }
-  } else if (st.type === 'deliverCar') {
-    if (M.car && !M.car.dead && dist(M.car.x, M.car.y, st.target.x, st.target.y) < 90) {
-      advanceStage(G);
-    }
-  } else if (st.type === 'holdout') {
-    if (d < 110 && !p.inCar) {
-      M.holdTimer += dt;
-      if (M.holdTimer >= st.hold) {
-        advanceStage(G);
-      }
-      // Police converge while the robbery runs.
-      if (Math.random() < dt * 0.35) G.police.addWanted(G, 0.5);
-    } else {
-      M.holdTimer = Math.max(0, M.holdTimer - dt * 2);
-    }
-  } else if (st.type === 'kill') {
-    if (!M.gangSpawned) spawnGang(G);
   }
-  // The 'goto' stage of Payback spawns the gang when the player arrives.
-  if (st.type === 'goto' && M.index === 3 && d < 120) {
-    advanceStage(G);
-  }
+  // Mission marker ring pulse is drawn by main.js from missionObjective().
+}
+
+export function retryMission() {
+  const p = S.player;
+  p.hp = p.maxHp;
+  p.inCar = null;
+  // Put the player back near the current mission's start point.
+  const L = S.world.landmarks;
+  const starts = [
+    { x: 1000, y: 420 },
+    { x: 1400, y: 420 },
+    { x: 600, y: 1400 },
+    { x: 2600, y: 2600 },
+    { x: 1800, y: 300 },
+  ];
+  const s = starts[S.mission] || starts[0];
+  p.x = s.x;
+  p.y = s.y;
+  p.vx = 0; p.vy = 0;
+  setWanted(S.mission === 2 ? 2 : 0);
+  startMission(S.mission);
+  S.mode = 'playing';
 }

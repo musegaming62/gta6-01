@@ -1,78 +1,61 @@
-// Keyboard and mouse state. Tracks held keys, edge-triggered presses, and the
-// mouse position in screen and world coordinates. No dependencies.
-export class Input {
-  constructor(canvas) {
-    this.keys = new Set();
-    this.pressed = new Set();
-    this.mouseX = 0;
-    this.mouseY = 0;
-    this.mouseDown = false;
-    this.mouseClicked = false;
-    this.canvas = canvas;
+// Solmar — keyboard and mouse input. Tracks held keys, pressed-this-frame
+// edges, and the mouse position in screen space. main.js converts the mouse
+// to world space with the camera.
 
-    window.addEventListener('keydown', (e) => {
-      if (e.repeat) return;
-      this.keys.add(e.code);
-      this.pressed.add(e.code);
-      // Keep arrows/space from scrolling the page while playing.
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
-        e.preventDefault();
-      }
-    });
-    window.addEventListener('keyup', (e) => {
-      this.keys.delete(e.code);
-    });
-    window.addEventListener('blur', () => {
-      this.keys.clear();
-      this.mouseDown = false;
-    });
-    canvas.addEventListener('mousemove', (e) => {
-      const r = canvas.getBoundingClientRect();
-      this.mouseX = e.clientX - r.left;
-      this.mouseY = e.clientY - r.top;
-    });
-    canvas.addEventListener('mousedown', (e) => {
-      if (e.button === 0) {
-        this.mouseDown = true;
-        this.mouseClicked = true;
-      }
-    });
-    window.addEventListener('mouseup', (e) => {
-      if (e.button === 0) this.mouseDown = false;
-    });
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-  }
+export const keys = {};
+export const pressed = {};
+export const mouse = { x: 0, y: 0, down: false, clicked: false };
 
-  down(code) {
-    return this.keys.has(code);
-  }
+const ALIASES = {
+  ArrowUp: 'KeyW', ArrowDown: 'KeyS', ArrowLeft: 'KeyA', ArrowRight: 'KeyD',
+};
 
-  // True only on the frame the key went down. Consumed at the end of each frame.
-  hit(code) {
-    return this.pressed.has(code);
-  }
+export function initInput(canvas) {
+  window.addEventListener('keydown', (e) => {
+    const code = ALIASES[e.code] || e.code;
+    if (!keys[code]) pressed[code] = true;
+    keys[code] = true;
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+      e.preventDefault();
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    const code = ALIASES[e.code] || e.code;
+    keys[code] = false;
+  });
+  window.addEventListener('blur', () => {
+    for (const k in keys) keys[k] = false;
+  });
+  canvas.addEventListener('mousemove', (e) => {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - r.left;
+    mouse.y = e.clientY - r.top;
+  });
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 0) {
+      mouse.down = true;
+      mouse.clicked = true;
+    }
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (e.button === 0) mouse.down = false;
+  });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+}
 
-  anyHit(codes) {
-    return codes.some((c) => this.pressed.has(c));
-  }
+export function endFrame() {
+  for (const k in pressed) pressed[k] = false;
+  mouse.clicked = false;
+}
 
-  // WASD or arrows as a -1/0/1 axis pair.
-  axes() {
-    let x = 0;
-    let y = 0;
-    if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
-    if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
-    if (this.down('KeyW') || this.down('ArrowUp')) y -= 1;
-    if (this.down('KeyS') || this.down('ArrowDown')) y += 1;
-    return { x, y };
-  }
-
-  sprinting() {
-    return this.down('ShiftLeft') || this.down('ShiftRight');
-  }
-
-  endFrame() {
-    this.pressed.clear();
-    this.mouseClicked = false;
-  }
+export function isDown(code) { return !!keys[code]; }
+export function wasPressed(code) { return !!pressed[code]; }
+export function consumePress(code) { pressed[code] = false; }
+export function axis() {
+  let x = 0, y = 0;
+  if (keys.KeyA) x -= 1;
+  if (keys.KeyD) x += 1;
+  if (keys.KeyW) y -= 1;
+  if (keys.KeyS) y += 1;
+  return { x, y };
 }

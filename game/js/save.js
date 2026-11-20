@@ -1,51 +1,41 @@
-// Save and continue via localStorage. Stores money, completed missions, the
-// current mission and stage, and the player's position.
+// Solmar — save and continue via localStorage. Stores money, the next
+// mission to play, and the player's position. A save is written on every
+// mission completion and when the player pauses.
+
+import { S } from './state.js';
+
 const KEY = 'solmar-save-v1';
 
-export function createSave() {
-  return {
-    save(G) {
-      try {
-        const data = {
-          money: Math.floor(G.player.money),
-          health: Math.round(G.player.health),
-          ammo: G.player.ammo,
-          x: Math.round(G.player.x),
-          y: Math.round(G.player.y),
-          mission: G.missions.index,
-          stage: G.missions.stage,
-          done: G.missions.done,
-        };
-        localStorage.setItem(KEY, JSON.stringify(data));
-      } catch (e) {
-        // Storage may be unavailable (private mode); the game still plays.
-      }
-    },
+export function writeSave() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify({
+      money: S.money,
+      mission: S.mission,
+      x: S.player ? S.player.x : 1000,
+      y: S.player ? S.player.y : 420,
+    }));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
-    load() {
-      try {
-        const raw = localStorage.getItem(KEY);
-        if (!raw) return null;
-        const data = JSON.parse(raw);
-        if (typeof data !== 'object' || data === null) return null;
-        return data;
-      } catch (e) {
-        return null;
-      }
-    },
+export function readSave() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    if (typeof d.money !== 'number' || typeof d.mission !== 'number') return null;
+    return d;
+  } catch (e) {
+    return null;
+  }
+}
 
-    hasSave() {
-      try {
-        return localStorage.getItem(KEY) !== null;
-      } catch (e) {
-        return false;
-      }
-    },
+export function hasSave() {
+  return readSave() !== null;
+}
 
-    clear() {
-      try {
-        localStorage.removeItem(KEY);
-      } catch (e) {}
-    },
-  };
+export function clearSave() {
+  try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ }
 }

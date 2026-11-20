@@ -1,125 +1,124 @@
-// Combat: bullets, hit detection against peds, cars and buildings, and the
-// player's shooting. Bullets are fast, short-lived, and blocked by buildings.
-import { dist } from './util.js';
-import { pointInBuilding } from './world.js';
-import { burst, muzzle } from './particles.js';
+// Solmar — combat. Bullets, shooting, and damage. The player, police and
+// gang members all fire through here; hits are resolved against peds, cops,
+// cars and the player. Operates on S directly so no import cycle forms.
+
+import { S } from './state.js';
+import { dist, dist2 } from './util.js';
+import { solidAt } from './world.js';
+import { muzzle, blood, sparks } from './particles.js';
+import { sfxShoot, sfxEnemyShoot, sfxHurt } from './audio.js';
 import { damagePed } from './peds.js';
-import { damage } from './player.js';
+import { damageCar } from './cars.js';
 
-export function createCombat() {
-  return { bullets: [] };
-}
-
-export function playerShoot(G, x, y, angle) {
-  const c = G.combat;
-  if (c.bullets.length > 90) return;
-  const speed = 820;
-  c.bullets.push({
-    x: x + Math.cos(angle) * 18,
-    y: y + Math.sin(angle) * 18,
-    vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed,
-    life: 0.9,
-    dmg: 20,
-    fromPlayer: true,
+export function fireBullet(x, y, angle, from, dmg, speed) {
+  const spread = from === 'player' ? 0.05 : 0.16;
+  const a = angle + (Math.random() - 0.5) * 2 * spread;
+  S.bullets.push({
+    x: x + Math.cos(a) * 16, y: y + Math.sin(a) * 16,
+    vx: Math.cos(a) * (speed || 780), vy: Math.sin(a) * (speed || 780),
+    life: 0.9, from, dmg: dmg || 20,
   });
-  muzzle(G.particles, x + Math.cos(angle) * 20, y + Math.sin(angle) * 20, angle);
-  G.audio.shot();
+  muzzle(x + Math.cos(a) * 16, y + Math.sin(a) * 16, a);
+  if (from === 'player') sfxShoot();
+  else sfxEnemyShoot();
 }
 
-export function enemyShoot(G, x, y, angle, dmg) {
-  const c = G.combat;
-  if (c.bullets.length > 90) return;
-  const speed = 640;
-  c.bullets.push({
-    x: x + Math.cos(angle) * 16,
-    y: y + Math.sin(angle) * 16,
-    vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed,
-    life: 0.9,
-    dmg: dmg || 7,
-    fromPlayer: false,
-  });
+export function damagePlayer(amount) {
+  const p = S.player;
+  if (!p || S.mode !== 'playing') return;
+  p.hp -= amount;
+  p.hurtT = 0.35;
+  sfxHurt();
+  if (p.hp <= 0) {
+    p.hp = 0;
+    S.mode = 'wasted';
+    S.failedReason = 'wasted';
+  }
 }
 
-export function updateCombat(G, dt) {
-  const c = G.combat;
-  for (let i = c.bullets.length - 1; i >= 0; i--) {
-    const b = c.bullets[i];
+function hitCircle(b, x, y, r) {
+  return dist2(b.x, b.y, x, y) < r * r;
+}
+
+export function updateBullets(dt) {
+  for (let i = S.bullets.length - 1; i >= 0; i--) {
+    const b = S.bullets[i];
     b.life -= dt;
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     let dead = b.life <= 0;
-    if (!dead && pointInBuilding(G.world, b.x, b.y)) {
-      burst(G.particles, b.x, b.y, 3, '#c9c9c9', 90, 0.25, 3);
+    if (!dead && solidAt(b.x, b.y, 2)) {
+      sparks(b.x, b.y, 3);
       dead = true;
     }
-    if (!dead && b.fromPlayer) {
-      // Hit a pedestrian.
-      for (const p of G.peds) {
-        if (p.dead || p.down) continue;
-        if (dist(b.x, b.y, p.x, p.y) < 13) {
-          const wasAlive = !p.dead;
-          damagePed(G, p, b.dmg, G.player.x, G.player.y);
-          if (wasAlive && p.dead && !p.isGang && !p.isCop) {
-            G.police.addWanted(G, 1);
-          } else if (wasAlive && p.isCop && p.dead) {
-            G.police.addWanted(G, 2);
-          }
-          dead = true;
-          break;
-        }
-      }
-    }
-    if (!dead && b.fromPlayer) {
-      // Hit a car.
-      for (const car of G.cars) {
-        if (car.dead) continue;
-        const dx = b.x - car.x;
-        const dy = b.y - car.y;
-        const ca = Math.cos(-car.angle);
-        const sa = Math.sin(-car.angle);
-        const lx = dx * ca - dy * sa;
-        const ly = dx * sa + dy * ca;
-        if (Math.abs(lx) < car.len / 2 + 2 && Math.abs(ly) < car.wid / 2 + 2) {
-          car.health -= b.dmg;
-          burst(G.particles, b.x, b.y, 4, '#ffb84d', 110, 0.3, 3);
-          dead = true;
-          break;
-        }
-      }
-    }
-    if (!dead && !b.fromPlayer) {
-      // Enemy bullet vs the player (on foot only).
-      if (!G.player.inCar && dist(b.x, b.y, G.player.x, G.player.y) < 12) {
-        damage(G, b.dmg);
+    if (!dead && b.from !== 'player') {
+      // Enemy bullets vs the player.
+      const p = S.player;
+      if (p && !p.inCar && hitCircle(b, p.x, p.y, 12)) {
+        damagePlayer(b.dmg);
+        blood(p.x, p.y);
+        dead = true;
+      } else if (p && p.inCar && hitCircle(b, p.inCar.x, p.inCar.y, 22)) {
+        p.inCar.hp -= b.dmg * 0.4;
+        sparks(p.inCar.x, p.inCar.y, 2);
         dead = true;
       }
-      // Enemy bullet vs the player's car.
-      if (!dead && G.player.inCar) {
-        const car = G.player.inCar;
-        const dx = b.x - car.x;
-        const dy = b.y - car.y;
-        const ca = Math.cos(-car.angle);
-        const sa = Math.sin(-car.angle);
-        const lx = dx * ca - dy * sa;
-        const ly = dx * sa + dy * ca;
-        if (Math.abs(lx) < car.len / 2 + 2 && Math.abs(ly) < car.wid / 2 + 2) {
-          car.health -= b.dmg;
+    }
+    if (!dead && b.from === 'player') {
+      // Player bullets vs peds, cops and cars.
+      for (const p of S.peds) {
+        if (p.state !== 'down' && hitCircle(b, p.x, p.y, 12)) {
+          damagePed(p, b.dmg);
+          blood(p.x, p.y);
           dead = true;
+          break;
+        }
+      }
+      if (!dead) {
+        for (const c of S.cops) {
+          if (c.state !== 'down' && hitCircle(b, c.x, c.y, 12)) {
+            damageCop(c, b.dmg);
+            blood(c.x, c.y);
+            dead = true;
+            break;
+          }
+        }
+      }
+      if (!dead) {
+        for (const car of S.cars) {
+          if (car.dead) continue;
+          if (hitCircle(b, car.x, car.y, 24)) {
+            damageCar(car, b.dmg * 0.5, b.x, b.y);
+            sparks(car.x, car.y, 2);
+            dead = true;
+            break;
+          }
         }
       }
     }
-    if (dead) c.bullets.splice(i, 1);
+    if (dead) S.bullets.splice(i, 1);
   }
 }
 
-export function drawBullets(ctx, G) {
-  ctx.strokeStyle = '#ffe9a8';
+// Cops live in S.cops (police.js owns them); damage is applied here so both
+// shooters share one code path.
+export function damageCop(c, amount) {
+  if (c.state === 'down') return;
+  c.hp -= amount;
+  if (c.hp <= 0) {
+    c.hp = 0;
+    c.state = 'down';
+    c.downT = 8;
+    S.stats.kills++;
+  }
+}
+
+export function drawBullets(ctx) {
+  ctx.strokeStyle = '#ffe27a';
   ctx.lineWidth = 2;
-  for (const b of G.combat.bullets) {
+  for (const b of S.bullets) {
     ctx.beginPath();
-    ctx.moveTo(b.x - b.vx * 0.012, b.y - b.vy * 0.012);
+    ctx.moveTo(b.x - b.vx * 0.016, b.y - b.vy * 0.016);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
   }

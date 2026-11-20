@@ -1,362 +1,348 @@
-// Solmar: the coastal city. A fixed-seed generated 3200x3200 open world with a
-// road grid, six districts, a beach and ocean along the south edge, and a harbour
-// dock. All layout is deterministic (seed 1337) so every load builds the same city.
-import { clamp, mulberry32, randInt, randRange, pick, circleRectPush, pointInRect } from './util.js';
+// Solmar — the city. Deterministic generation (seeded RNG) of a 3200x3200
+// coastal city: six named districts, a road grid, buildings, a beach and
+// ocean to the south, and a harbour with docks on the east edge. Also owns
+// collision queries and the ground/building drawing.
 
-export const WORLD_SIZE = 3200;
-export const ROAD_W = 100;
-export const ROAD_CENTERS = [300, 700, 1100, 1500, 1900, 2300, 2700];
+import { S, WORLD, ROAD_STEP, ROAD_HALF, BEACH_Y, WATER_Y } from './state.js';
+import { mulberry32, clamp, randInt } from './util.js';
 
-// Fixed mission/story locations. Kept clear of buildings by the generator.
-export const SPOTS = {
-  playerStart: { x: 1500, y: 1650, label: 'Downtown' },
-  sportsCar: { x: 1680, y: 1320, label: 'Sports car' },
-  chopShop: { x: 900, y: 2350, label: 'Chop shop' },
-  pickupA: { x: 2500, y: 900, label: 'Pickup point' },
-  pickupB: { x: 700, y: 700, label: 'Drop-off' },
-  safehouse: { x: 2900, y: 2830, label: 'Safehouse' },
-  turf: { x: 520, y: 1950, label: 'Vulture turf' },
-  bank: { x: 1500, y: 1500, label: 'Solmar National Bank' },
-  boat: { x: 3050, y: 2970, label: 'Harbour boat' },
-};
+export const ROAD_X = [200, 600, 1000, 1400, 1800, 2200, 2600, 3000];
+export const ROAD_Y = [200, 600, 1000, 1400, 1800, 2200, 2600, 3000];
 
-const DISTRICTS = [
-  { id: 'downtown', name: 'Downtown', base: '#8a8f7a', roofs: ['#5d6b7a', '#6b7a8a', '#7a6b5d', '#4d5a6b'] },
-  { id: 'port', name: 'Portside', base: '#7d8478', roofs: ['#8a6f4d', '#6f7a6b', '#7a5d4d'] },
-  { id: 'beach', name: 'Marina Beach', base: '#d9c48f', roofs: ['#c9a86a', '#b89a5d'] },
-  { id: 'heights', name: 'Palm Heights', base: '#7fae6e', roofs: ['#a8543f', '#b06a4a', '#8a5a3f'] },
-  { id: 'foundry', name: 'Foundry', base: '#8a8578', roofs: ['#6b6b6b', '#7a7a72', '#5d5d55'] },
-  { id: 'hills', name: 'Vista Hills', base: '#86a860', roofs: ['#7a4a3f', '#94553f', '#6b4a3f'] },
+export const DISTRICTS = [
+  { name: 'Old Town', x0: 0, y0: 0, x1: 1200, y1: 1200, palette: ['#b5654a', '#c97e5a', '#a85f46', '#d08a63'], ground: '#7fae6d' },
+  { name: 'Downtown', x0: 1200, y0: 0, x1: 3200, y1: 1200, palette: ['#5b7fa6', '#6b8fb5', '#4e6d94', '#7d9cc0'], ground: '#8a8f96' },
+  { name: 'La Vista', x0: 0, y0: 1200, x1: 1200, y1: 2200, palette: ['#e8b4b8', '#f2c9a0', '#d9a0a8', '#eec27a'], ground: '#86b364' },
+  { name: 'Portside', x0: 1200, y0: 1200, x1: 3200, y1: 2200, palette: ['#8a7f74', '#7a6f66', '#9a8a7a', '#6e6258'], ground: '#9a938a' },
+  { name: 'Marina Beach', x0: 0, y0: 2200, x1: 1600, y1: 3200, palette: ['#f2ead8', '#e8dcc0', '#ffffff', '#e0d0b0'], ground: '#e8d9a8' },
+  { name: 'Hillside', x0: 1600, y0: 2200, x1: 3200, y1: 3200, palette: ['#6d8f6d', '#7fa07a', '#5d7f5d', '#8fae8a'], ground: '#7ba05b' },
 ];
 
 export function districtAt(x, y) {
-  if (y >= 2700) return 'beach';
-  if (x >= 2500 && y < 1500) return 'port';
-  if (x >= 2100 && y < 1100) return 'hills';
-  if (x < 1100 && y < 1100) return 'heights';
-  if (x < 1100 && y >= 1500) return 'foundry';
-  return 'downtown';
+  for (const d of DISTRICTS) {
+    if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d;
+  }
+  return DISTRICTS[0];
 }
 
-function districtDef(id) {
-  return DISTRICTS.find((d) => d.id === id);
-}
-
-export function buildWorld(seed) {
-  const rng = mulberry32(seed || 1337);
+export function buildCity() {
+  const rng = mulberry32(1337);
   const buildings = [];
   const trees = [];
-  const parks = [];
+  const spots = []; // parking spots on roadsides
+  const pick = (arr) => arr[Math.floor(rng() * arr.length)];
 
-  // Clear zones around story spots: no building may cover one.
-  const clearZones = Object.values(SPOTS).map((s) => ({ x: s.x, y: s.y, r: 80 }));
+  const landmarkBlocks = {
+    bank: { bx: 4, by: 0, label: 'SOLMAR NATIONAL BANK', w: 150, h: 110 },
+    chop: { bx: 5, by: 3, label: 'CHOP SHOP', w: 130, h: 90 },
+    safe: { bx: 1, by: 3, label: 'SAFEHOUSE', w: 110, h: 90 },
+    turf: { bx: 5, by: 5, label: 'VULTURE TURF', w: 0, h: 0 },
+    pickup: { bx: 3, by: 1, label: 'PICKUP', w: 0, h: 0 },
+  };
 
-  // City blocks sit between road centrelines. A block spans 350..650, 750..1050, ...
   for (let bx = 0; bx < 7; bx++) {
     for (let by = 0; by < 7; by++) {
-      const x0 = ROAD_CENTERS[bx] + ROAD_W / 2 + 10;
-      const y0 = ROAD_CENTERS[by] + ROAD_W / 2 + 10;
-      const x1 = ROAD_CENTERS[bx + 1] !== undefined
-        ? ROAD_CENTERS[bx + 1] - ROAD_W / 2 - 10
-        : WORLD_SIZE - 40;
-      const y1 = ROAD_CENTERS[by + 1] !== undefined
-        ? ROAD_CENTERS[by + 1] - ROAD_W / 2 - 10
-        : 2920 - 10;
-      if (x1 <= x0 + 40 || y1 <= y0 + 40) continue;
+      const x0 = ROAD_X[bx] + ROAD_HALF + 22;
+      const y0 = ROAD_Y[by] + ROAD_HALF + 22;
+      const x1 = ROAD_X[bx + 1] - ROAD_HALF - 22;
+      const y1 = ROAD_Y[by + 1] - ROAD_HALF - 22;
       const cx = (x0 + x1) / 2;
       const cy = (y0 + y1) / 2;
-      const district = districtAt(cx, cy);
-      const def = districtDef(district);
-
-      // Residential and hills blocks sometimes become parks instead of buildings.
-      if ((district === 'heights' || district === 'hills') && chance(rng, 0.18)) {
-        parks.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
-        for (let t = 0; t < 6; t++) {
-          trees.push({ x: randRange(rng, x0 + 20, x1 - 20), y: randRange(rng, y0 + 20, y1 - 20), r: randRange(rng, 10, 16) });
+      const d = districtAt(cx, cy);
+      // Landmark blocks get their landmark instead of random buildings.
+      let lm = null;
+      for (const key in landmarkBlocks) {
+        const L = landmarkBlocks[key];
+        if (L.bx === bx && L.by === by) { lm = { key, ...L }; break; }
+      }
+      if (lm) {
+        if (lm.w > 0) {
+          buildings.push({ x: cx - lm.w / 2, y: cy - lm.h / 2, w: lm.w, h: lm.h, color: pick(d.palette), district: d.name, label: lm.label, landmark: lm.key });
+        } else if (lm.key === 'turf') {
+          // open lot: no building, gang spawn points around the centre
+          buildings.push({ x: cx - 90, y: cy - 60, w: 60, h: 44, color: '#7a4a3a', district: d.name, label: 'WAREHOUSE', landmark: 'shed' });
         }
         continue;
       }
-
-      // One large building, or a pair of smaller ones, per block.
-      const count = district === 'downtown' ? 2 : (chance(rng, 0.88) ? 2 : 1);
-      for (let i = 0; i < count; i++) {
-        let bw;
-        let bh;
-        let px;
-        let py;
-        if (count === 1) {
-          bw = randRange(rng, (x1 - x0) * 0.45, (x1 - x0) * 0.8);
-          bh = randRange(rng, (y1 - y0) * 0.45, (y1 - y0) * 0.8);
-          px = cx - bw / 2 + randRange(rng, -20, 20);
-          py = cy - bh / 2 + randRange(rng, -20, 20);
-        } else {
-          bw = (x1 - x0) / 2 - 24;
-          bh = randRange(rng, (y1 - y0) * 0.4, (y1 - y0) * 0.7);
-          px = i === 0 ? x0 + 8 : x0 + (x1 - x0) / 2 + 8;
-          py = y0 + (y1 - y0 - bh) / 2;
+      // Beach strip: southern blocks are sand with palms, few buildings.
+      if (cy > 2780) {
+        for (let i = 0; i < 4; i++) {
+          trees.push({ x: x0 + rng() * (x1 - x0), y: y0 + rng() * (y1 - y0), palm: true });
         }
-        // Keep story spots clear.
-        const hitSpot = clearZones.some((z) => {
-          const nx = clamp(z.x, px, px + bw);
-          const ny = clamp(z.y, py, py + bh);
-          const dx = z.x - nx;
-          const dy = z.y - ny;
-          return dx * dx + dy * dy < z.r * z.r;
-        });
-        if (hitSpot) continue;
-        buildings.push({
-          x: px, y: py, w: bw, h: bh,
-          district,
-          roof: pick(rng, def.roofs),
-          tall: district === 'downtown' && chance(rng, 0.5),
-        });
+        if (rng() < 0.35) {
+          buildings.push({ x: cx - 55, y: cy - 40, w: 110, h: 80, color: pick(d.palette), district: d.name, label: '' });
+        }
+        continue;
       }
-
-      // A few street trees on block corners.
-      if (chance(rng, 0.4)) {
-        trees.push({ x: x0 + 14, y: y0 + 14, r: randRange(rng, 8, 13) });
+      if (rng() < 0.08) {
+        // Park block: grass and trees, no building.
+        for (let i = 0; i < 5; i++) {
+          trees.push({ x: x0 + rng() * (x1 - x0), y: y0 + rng() * (y1 - y0), palm: false });
+        }
+        continue;
       }
+      const two = rng() < 0.65;
+      if (two) {
+        const w1 = 90 + rng() * 50, h1 = 70 + rng() * 50;
+        const w2 = 80 + rng() * 50, h2 = 60 + rng() * 40;
+        buildings.push({ x: x0 + 8, y: y0 + 8, w: w1, h: h1, color: pick(d.palette), district: d.name, label: '' });
+        buildings.push({ x: x1 - w2 - 8, y: y1 - h2 - 8, w: w2, h: h2, color: pick(d.palette), district: d.name, label: '' });
+      } else {
+        const w = 130 + rng() * 60, h = 100 + rng() * 60;
+        buildings.push({ x: cx - w / 2, y: cy - h / 2, w, h, color: pick(d.palette), district: d.name, label: '' });
+      }
+      // A couple of trees in the block corners.
+      if (rng() < 0.6) trees.push({ x: x0 + 14, y: y1 - 14, palm: false });
+      if (rng() < 0.4) trees.push({ x: x1 - 14, y: y0 + 14, palm: false });
     }
   }
 
-  // The bank is a landmark: a wide building in the block just south-east of the
-  // downtown spot, clear of the roads so traffic keeps flowing.
-  buildings.push({
-    x: SPOTS.bank.x + 60, y: SPOTS.bank.y + 60, w: 180, h: 120,
-    district: 'downtown', roof: '#c9a227', tall: true, landmark: 'bank',
-  });
-  // Chop shop: a low warehouse in the block just south of its spot, off the road.
-  buildings.push({
-    x: SPOTS.chopShop.x - 80, y: SPOTS.chopShop.y + 70, w: 160, h: 110,
-    district: 'foundry', roof: '#7a3f2e', tall: false, landmark: 'chop',
-  });
-
-  // Beach palms along the sand.
+  // Parking spots along road edges for parked cars.
   for (let i = 0; i < 26; i++) {
-    trees.push({
-      x: randRange(rng, 80, WORLD_SIZE - 80),
-      y: randRange(rng, 2940, 3040),
-      r: randRange(rng, 9, 14),
-      palm: true,
-    });
+    const vertical = rng() < 0.5;
+    const road = ROAD_X[Math.floor(rng() * ROAD_X.length)];
+    const along = 260 + rng() * 2680;
+    const side = rng() < 0.5 ? -1 : 1;
+    if (vertical) spots.push({ x: road + side * (ROAD_HALF + 16), y: along, angle: side > 0 ? Math.PI / 2 : -Math.PI / 2 });
+    else spots.push({ x: along, y: road + side * (ROAD_HALF + 16), angle: side > 0 ? 0 : Math.PI });
   }
 
-  return {
-    size: WORLD_SIZE,
-    buildings,
-    trees,
-    parks,
-    seed: seed || 1337,
-    buildingCount: buildings.length,
-  };
+  const landmarks = {};
+  for (const b of buildings) {
+    if (b.landmark) landmarks[b.landmark] = { x: b.x + b.w / 2, y: b.y + b.h / 2, w: b.w, h: b.h };
+  }
+  // Fixed points that are not buildings.
+  landmarks.pickup = { x: ROAD_X[3] + 200, y: ROAD_Y[1] + 200, w: 0, h: 0 };
+  landmarks.turf = { x: ROAD_X[5] + 200, y: ROAD_Y[5] + 200, w: 0, h: 0 };
+  landmarks.boat = { x: 3130, y: 2500, w: 0, h: 0 };
+  landmarks.dock = { x: 3060, y: 2500, w: 0, h: 0 };
+
+  S.world = { buildings, trees, spots, landmarks };
+  return S.world;
 }
 
-export function isOnRoad(x, y) {
-  for (const c of ROAD_CENTERS) {
-    if (Math.abs(x - c) <= ROAD_W / 2) return true;
-    if (Math.abs(y - c) <= ROAD_W / 2) return true;
+export function solidAt(x, y, r) {
+  if (x < r || y < r || x > WORLD - r || y > WORLD - r) return true;
+  if (y > WATER_Y - r) return true; // ocean
+  for (const b of S.world.buildings) {
+    if (x + r > b.x && x - r < b.x + b.w && y + r > b.y && y - r < b.y + b.h) return true;
   }
   return false;
 }
 
-export function inOcean(x, y) {
-  return y > 3080;
-}
-
-export function onBeach(x, y) {
-  return y > 2920 && y <= 3080;
-}
-
-// Push a circle out of every building it overlaps. Returns total push applied.
-export function collideBuildings(world, x, y, r) {
-  let px = 0;
-  let py = 0;
+// Push a circle out of buildings/water/bounds. Returns true if it collided.
+export function resolveCircle(e, r) {
   let hit = false;
-  for (const b of world.buildings) {
-    if (x < b.x - r || x > b.x + b.w + r || y < b.y - r || y > b.y + b.h + r) continue;
-    const push = circleRectPush(x, y, r, b.x, b.y, b.w, b.h);
-    if (push) {
-      px += push.x;
-      py += push.y;
+  if (e.x < r) { e.x = r; hit = true; }
+  if (e.y < r) { e.y = r; hit = true; }
+  if (e.x > WORLD - r) { e.x = WORLD - r; hit = true; }
+  if (e.y > WATER_Y - r) { e.y = WATER_Y - r; hit = true; }
+  for (const b of S.world.buildings) {
+    const cx = clamp(e.x, b.x, b.x + b.w);
+    const cy = clamp(e.y, b.y, b.y + b.h);
+    const dx = e.x - cx, dy = e.y - cy;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < r * r) {
       hit = true;
+      if (d2 > 0.01) {
+        const d = Math.sqrt(d2);
+        e.x = cx + (dx / d) * r;
+        e.y = cy + (dy / d) * r;
+      } else {
+        // centre inside the box: push out along the smallest overlap
+        const left = e.x - b.x, right = b.x + b.w - e.x;
+        const top = e.y - b.y, bottom = b.y + b.h - e.y;
+        const m = Math.min(left, right, top, bottom);
+        if (m === left) e.x = b.x - r;
+        else if (m === right) e.x = b.x + b.w + r;
+        else if (m === top) e.y = b.y - r;
+        else e.y = b.y + b.h + r;
+      }
     }
   }
-  return hit ? { x: px, y: py } : null;
+  return hit;
 }
 
-export function pointInBuilding(world, x, y) {
-  for (const b of world.buildings) {
-    if (pointInRect(x, y, b.x, b.y, b.w, b.h)) return b;
+// True when the segment from (x1,y1) to (x2,y2) crosses any building.
+// Used for line of sight: cops and gang members cannot shoot through walls.
+export function segmentHitsBuilding(x1, y1, x2, y2) {
+  const d = Math.hypot(x2 - x1, y2 - y1);
+  const steps = Math.max(1, Math.ceil(d / 14));
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const x = x1 + (x2 - x1) * t, y = y1 + (y2 - y1) * t;
+    for (const b of S.world.buildings) {
+      if (x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.h) return true;
+    }
   }
-  return null;
+  return false;
 }
 
-// Nearest road centreline coordinate to a point (for traffic AI recovery).
-export function nearestRoadCoord(v) {
-  let best = ROAD_CENTERS[0];
-  let bd = Infinity;
-  for (const c of ROAD_CENTERS) {
-    const d = Math.abs(v - c);
-    if (d < bd) { bd = d; best = c; }
+export function isOnRoad(x, y) {
+  for (const rx of ROAD_X) if (Math.abs(x - rx) < ROAD_HALF) return true;
+  for (const ry of ROAD_Y) if (Math.abs(y - ry) < ROAD_HALF) return true;
+  return false;
+}
+
+export function nearestRoad(x, y) {
+  let best = null, bestD = 1e9;
+  for (const rx of ROAD_X) {
+    const d = Math.abs(x - rx);
+    if (d < bestD) { bestD = d; best = { axis: 'x', road: rx, along: y }; }
+  }
+  for (const ry of ROAD_Y) {
+    const d = Math.abs(y - ry);
+    if (d < bestD) { bestD = d; best = { axis: 'y', road: ry, along: x }; }
   }
   return best;
 }
 
-function chance(rng, p) {
-  return rng() < p;
-}
+// --- Drawing ----------------------------------------------------------------
 
-// ---- Rendering ----
-
-export function drawWorld(ctx, cam, world, time) {
-  const vw = cam.w;
-  const vh = cam.h;
-  const x0 = cam.x - vw / 2 - 60;
-  const y0 = cam.y - vh / 2 - 60;
-  const x1 = cam.x + vw / 2 + 60;
-  const y1 = cam.y + vh / 2 + 60;
-
-  // Ground: district base colours in big tiles.
-  ctx.fillStyle = '#7d8478';
+export function drawWorld(ctx, view) {
+  const { x0, y0, x1, y1 } = view;
+  // Ground base
+  ctx.fillStyle = '#79a85e';
   ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-  const tile = 400;
-  for (let tx = Math.max(0, Math.floor(x0 / tile) * tile); tx < x1; tx += tile) {
-    for (let ty = Math.max(0, Math.floor(y0 / tile) * tile); ty < y1; ty += tile) {
-      const d = districtDef(districtAt(tx + tile / 2, ty + tile / 2));
-      ctx.fillStyle = d.base;
-      ctx.fillRect(tx, ty, tile, tile);
+  // District ground tints
+  for (const d of DISTRICTS) {
+    const ix0 = Math.max(d.x0, x0), iy0 = Math.max(d.y0, y0);
+    const ix1 = Math.min(d.x1, x1), iy1 = Math.min(d.y1, y1);
+    if (ix1 <= ix0 || iy1 <= iy0) continue;
+    ctx.fillStyle = d.ground;
+    ctx.globalAlpha = 0.35;
+    ctx.fillRect(ix0, iy0, ix1 - ix0, iy1 - iy0);
+    ctx.globalAlpha = 1;
+  }
+  // Beach and ocean
+  if (y1 > BEACH_Y) {
+    ctx.fillStyle = '#e8d9a0';
+    ctx.fillRect(Math.max(x0, 0), BEACH_Y, Math.min(x1, WORLD) - Math.max(x0, 0), Math.min(y1, WATER_Y) - BEACH_Y);
+    if (y1 > WATER_Y) {
+      ctx.fillStyle = '#2f7fc4';
+      ctx.fillRect(Math.max(x0, 0), WATER_Y, Math.min(x1, WORLD) - Math.max(x0, 0), y1 - WATER_Y);
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 2;
+      for (let wy = WATER_Y + 24; wy < y1; wy += 46) {
+        ctx.beginPath();
+        for (let wx = Math.max(x0, 0); wx < Math.min(x1, WORLD); wx += 40) {
+          ctx.moveTo(wx, wy + Math.sin(wx * 0.02 + wy) * 3);
+          ctx.lineTo(wx + 20, wy + Math.sin(wx * 0.02 + wy) * 3);
+        }
+        ctx.stroke();
+      }
     }
   }
-
-  // Ocean and beach along the south edge.
-  if (y1 > 2920) {
-    ctx.fillStyle = '#e0cd96';
-    ctx.fillRect(Math.max(x0, 0), 2920, Math.min(x1, WORLD_SIZE) - Math.max(x0, 0), Math.min(y1, 3080) - 2920);
-    ctx.fillStyle = '#2f6fb0';
-    ctx.fillRect(Math.max(x0, 0), 3080, Math.min(x1, WORLD_SIZE) - Math.max(x0, 0), Math.min(y1, WORLD_SIZE) - 3080);
-    // Animated wave line at the waterline.
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    for (let wx = Math.max(x0, 0); wx < Math.min(x1, WORLD_SIZE); wx += 40) {
-      const wy = 3080 + Math.sin(wx * 0.01 + time * 1.4) * 4;
-      if (wx === Math.max(x0, 0)) ctx.moveTo(wx, wy);
-      else ctx.lineTo(wx, wy);
-    }
-    ctx.stroke();
-  }
-
-  // Parks.
-  for (const p of world.parks) {
-    if (p.x > x1 || p.x + p.w < x0 || p.y > y1 || p.y + p.h < y0) continue;
-    ctx.fillStyle = '#5d9a4a';
-    ctx.fillRect(p.x, p.y, p.w, p.h);
-  }
-
-  // Roads: dark asphalt with centre dashes.
+  // Harbour docks (east edge)
+  ctx.fillStyle = '#8a6f4d';
+  ctx.fillRect(3040, 2360, 90, 280);
+  ctx.fillStyle = '#6e5638';
+  ctx.fillRect(3040, 2360, 90, 12);
+  // Roads
   ctx.fillStyle = '#3d3d42';
-  for (const c of ROAD_CENTERS) {
-    if (c + ROAD_W / 2 >= x0 && c - ROAD_W / 2 <= x1) {
-      ctx.fillRect(c - ROAD_W / 2, Math.max(y0, 0), ROAD_W, Math.min(y1, 2920) - Math.max(y0, 0));
-    }
-    if (c + ROAD_W / 2 >= y0 && c - ROAD_W / 2 <= y1) {
-      ctx.fillRect(Math.max(x0, 0), c - ROAD_W / 2, Math.min(x1, WORLD_SIZE) - Math.max(x0, 0), ROAD_W);
-    }
+  for (const rx of ROAD_X) {
+    if (rx + ROAD_HALF < x0 || rx - ROAD_HALF > x1) continue;
+    ctx.fillRect(rx - ROAD_HALF, Math.max(y0, 0), ROAD_HALF * 2, Math.min(y1, WATER_Y) - Math.max(y0, 0));
   }
-  // Sidewalk edges.
-  ctx.fillStyle = '#9a9a92';
-  for (const c of ROAD_CENTERS) {
-    if (c + ROAD_W / 2 + 8 >= x0 && c - ROAD_W / 2 - 8 <= x1) {
-      ctx.fillRect(c - ROAD_W / 2 - 8, Math.max(y0, 0), 8, Math.min(y1, 2920) - Math.max(y0, 0));
-      ctx.fillRect(c + ROAD_W / 2, Math.max(y0, 0), 8, Math.min(y1, 2920) - Math.max(y0, 0));
-    }
-    if (c + ROAD_W / 2 + 8 >= y0 && c - ROAD_W / 2 - 8 <= y1) {
-      ctx.fillRect(Math.max(x0, 0), c - ROAD_W / 2 - 8, Math.min(x1, WORLD_SIZE) - Math.max(x0, 0), 8);
-      ctx.fillRect(Math.max(x0, 0), c + ROAD_W / 2, Math.min(x1, WORLD_SIZE) - Math.max(x0, 0), 8);
-    }
+  for (const ry of ROAD_Y) {
+    if (ry + ROAD_HALF < y0 || ry - ROAD_HALF > y1 || ry > WATER_Y) continue;
+    ctx.fillRect(Math.max(x0, 0), ry - ROAD_HALF, Math.min(x1, WORLD) - Math.max(x0, 0), ROAD_HALF * 2);
   }
-  // Lane dashes.
-  ctx.strokeStyle = 'rgba(230,230,200,0.7)';
+  // Centre dashes
+  ctx.strokeStyle = 'rgba(240,220,90,0.8)';
   ctx.lineWidth = 3;
   ctx.setLineDash([18, 22]);
-  ctx.beginPath();
-  for (const c of ROAD_CENTERS) {
-    if (c >= y0 && c <= y1) {
-      ctx.moveTo(Math.max(x0, 0), c);
-      ctx.lineTo(Math.min(x1, WORLD_SIZE), c);
-    }
-    if (c >= x0 && c <= x1) {
-      ctx.moveTo(c, Math.max(y0, 0));
-      ctx.lineTo(c, Math.min(y1, 2920));
-    }
+  for (const rx of ROAD_X) {
+    if (rx < x0 || rx > x1) continue;
+    ctx.beginPath();
+    ctx.moveTo(rx, Math.max(y0, 0));
+    ctx.lineTo(rx, Math.min(y1, WATER_Y));
+    ctx.stroke();
   }
-  ctx.stroke();
+  for (const ry of ROAD_Y) {
+    if (ry < y0 || ry > y1 || ry > WATER_Y) continue;
+    ctx.beginPath();
+    ctx.moveTo(Math.max(x0, 0), ry);
+    ctx.lineTo(Math.min(x1, WORLD), ry);
+    ctx.stroke();
+  }
   ctx.setLineDash([]);
-
-  // Buildings with a drop shadow and a lighter roof inset.
-  for (const b of world.buildings) {
-    if (b.x > x1 || b.x + b.w < x0 || b.y > y1 || b.y + b.h < y0) continue;
+  // Crosswalks at intersections
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  for (const rx of ROAD_X) {
+    for (const ry of ROAD_Y) {
+      if (rx < x0 - 80 || rx > x1 + 80 || ry < y0 - 80 || ry > y1 + 80) continue;
+      for (let i = -2; i <= 2; i++) {
+        ctx.fillRect(rx - ROAD_HALF + 6 + i * 22, ry - 52, 10, 14);
+        ctx.fillRect(rx - ROAD_HALF + 6 + i * 22, ry + 38, 10, 14);
+      }
+    }
+  }
+  // Trees
+  for (const t of S.world.trees) {
+    if (t.x < x0 - 20 || t.x > x1 + 20 || t.y < y0 - 20 || t.y > y1 + 20) continue;
+    ctx.fillStyle = t.palm ? '#2f8f5b' : '#3e7d44';
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, t.palm ? 13 : 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#6b4a2f';
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Buildings
+  for (const b of S.world.buildings) {
+    if (b.x + b.w < x0 || b.x > x1 || b.y + b.h < y0 || b.y > y1) continue;
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    ctx.fillRect(b.x + 6, b.y + 8, b.w, b.h);
-    ctx.fillStyle = b.roof;
+    ctx.fillRect(b.x + 4, b.y + 5, b.w, b.h);
+    ctx.fillStyle = b.color;
     ctx.fillRect(b.x, b.y, b.w, b.h);
-    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    // Roof detail: inner panel + windows
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
     ctx.fillRect(b.x + 6, b.y + 6, b.w - 12, b.h - 12);
-    if (b.tall) {
-      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(b.x + 10, b.y + 10, b.w - 20, b.h - 20);
+    ctx.fillStyle = 'rgba(40,60,90,0.55)';
+    const cols = Math.max(1, Math.floor(b.w / 26));
+    const rows = Math.max(1, Math.floor(b.h / 26));
+    for (let i = 0; i < cols; i++) {
+      for (let j = 0; j < rows; j++) {
+        ctx.fillRect(b.x + 10 + i * 26, b.y + 10 + j * 26, 12, 9);
+      }
     }
-    if (b.landmark === 'bank') {
-      ctx.fillStyle = '#fff8d0';
-      ctx.font = 'bold 26px sans-serif';
+    if (b.label) {
+      ctx.fillStyle = '#1d1d1d';
+      ctx.font = 'bold 13px Arial';
       ctx.textAlign = 'center';
-      ctx.fillText('$', b.x + b.w / 2, b.y + b.h / 2 + 9);
-    }
-    if (b.landmark === 'chop') {
-      ctx.fillStyle = '#ffd0a0';
-      ctx.font = 'bold 13px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('CHOP SHOP', b.x + b.w / 2, b.y + b.h / 2 + 5);
+      ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 4);
     }
   }
-
-  // Trees.
-  for (const t of world.trees) {
-    if (t.x < x0 || t.x > x1 || t.y < y0 || t.y > y1) continue;
-    ctx.fillStyle = '#2f6b2f';
-    ctx.beginPath();
-    ctx.arc(t.x, t.y, t.r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#3f8a3f';
-    ctx.beginPath();
-    ctx.arc(t.x - 3, t.y - 3, t.r * 0.55, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Harbour dock and boat at the south-east shoreline.
-  ctx.fillStyle = '#6b4a2f';
-  ctx.fillRect(2980, 2920, 140, 60);
-  ctx.fillStyle = '#8a6a3f';
-  ctx.fillRect(2980, 2920, 140, 10);
-  drawBoat(ctx, SPOTS.boat.x, SPOTS.boat.y, time);
-}
-
-export function drawBoat(ctx, x, y, time) {
-  const bob = Math.sin(time * 1.2) * 2;
+  // Boat at the harbour
   ctx.save();
-  ctx.translate(x, y + bob);
-  ctx.fillStyle = '#f0f0e8';
+  ctx.translate(3130, 2500);
+  ctx.fillStyle = '#f4f4f4';
   ctx.beginPath();
-  ctx.moveTo(-42, 0);
-  ctx.lineTo(42, 0);
-  ctx.lineTo(30, 16);
-  ctx.lineTo(-30, 16);
-  ctx.closePath();
+  ctx.ellipse(0, 0, 52, 20, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = '#c0392b';
-  ctx.fillRect(-14, -26, 28, 26);
-  ctx.fillStyle = '#2c3e50';
-  ctx.fillRect(-4, -40, 8, 16);
+  ctx.fillRect(-30, -8, 60, 16);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(8, -26, 6, 22);
   ctx.restore();
+  // District names on the map (faint, big)
+  ctx.fillStyle = 'rgba(20,40,20,0.16)';
+  ctx.font = 'bold 44px Arial';
+  ctx.textAlign = 'center';
+  for (const d of DISTRICTS) {
+    const cx = (d.x0 + d.x1) / 2, cy = (d.y0 + d.y1) / 2;
+    if (cx < x0 - 200 || cx > x1 + 200 || cy < y0 - 200 || cy > y1 + 200) continue;
+    ctx.fillText(d.name.toUpperCase(), cx, cy);
+  }
+}
+
+export function randomStreetPoint(rng) {
+  const road = ROAD_X[Math.floor(rng() * ROAD_X.length)];
+  const along = 300 + rng() * 2600;
+  return { x: road, y: along };
 }

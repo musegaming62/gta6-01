@@ -1,384 +1,290 @@
-// Solmar: boot, game loop, camera, and rendering. Wires every module together
-// and exposes window.__solmar so the game can be driven and inspected.
-import { clamp, mulberry32, randRange } from './util.js';
-import { buildWorld, drawWorld, SPOTS, WORLD_SIZE } from './world.js';
-import { SoundFX } from './audio.js';
-import { Input } from './input.js';
-import { createParticles, updateParticles, drawParticles, shakeOffset } from './particles.js';
-import { spawnParkedCars, updateCars, drawCars } from './cars.js';
-import { spawnPeds, updatePeds, drawPeds } from './peds.js';
-import { createCombat, updateCombat, drawBullets, playerShoot, enemyShoot } from './combat.js';
-import { createPlayer, updatePlayer, drawPlayer } from './player.js';
-import { createPolice, updatePolice, clearWanted, addWanted, setWanted, busted, wasted } from './police.js';
-import { createMissions, updateMissions, startMission, currentDef, currentStage, onEnterCar, onGangKilled } from './missions.js';
-import { createHud, bindHud, showMenu, hideMenu, showPause, hidePause, hideEnd, updateHud, showBusted, showWasted, showWin, showBanner, showMessage } from './hud.js';
-import { createSave } from './save.js';
-import { stageShot, shotFromUrl } from './shots.js';
+// Solmar — entry point. Boots the city, runs the game loop, owns the camera
+// and the screens (menu, pause, busted, wasted, failed, win), and stages the
+// four screenshot scenes from the ?shot= query parameter.
+
+import { S, WORLD, freshPlayer, resetRun } from './state.js';
+import { clamp, dist, angleTo } from './util.js';
+import { buildCity, drawWorld, ROAD_X, segmentHitsBuilding } from './world.js';
+import { initInput, isDown, wasPressed, consumePress, endFrame, mouse } from './input.js';
+import { updatePlayer, drawPlayer, drawPickups, enterCar, spawnPickup } from './player.js';
+import { drawCars, updateTraffic, spawnParkedCars, spawnTraffic, makeCar } from './cars.js';
+import { updatePeds, drawPeds, spawnPeds, spawnGang } from './peds.js';
+import { updatePolice, drawCops, setWanted } from './police.js';
+import { updateBullets, drawBullets, fireBullet } from './combat.js';
+import { updateMissions, startMission, missionObjective, retryMission, MISSIONS } from './missions.js';
+import { updateParticles, drawParticles } from './particles.js';
+import { initHud, updateHud } from './hud.js';
+import { writeSave, readSave, hasSave } from './save.js';
+import { ensureAudio, updateAudio, stopEngine, sfxClick, sfxMission } from './audio.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-
-const G = {
-  time: 0,
-  state: 'menu', // menu | playing | paused | busted | wasted | win
-  view: { w: 1280, h: 800 },
-  camera: { x: 1500, y: 1650, w: 1280, h: 800 },
-  world: null,
-  player: null,
-  cars: [],
-  peds: [],
-  pickups: [],
-  particles: null,
-  combat: null,
-  police: null,
-  missions: null,
-  hud: null,
-  save: null,
-  audio: null,
-  input: null,
-};
+let viewW = 1280;
+let viewH = 800;
+let lastT = 0;
 
 function resize() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  canvas.width = w;
-  canvas.height = h;
-  G.view.w = w;
-  G.view.h = h;
-  G.camera.w = w;
-  G.camera.h = h;
+  viewW = window.innerWidth;
+  viewH = window.innerHeight;
+  canvas.width = viewW;
+  canvas.height = viewH;
 }
+window.addEventListener('resize', resize);
 
-function spawnPickups() {
-  const rng = mulberry32(999);
-  const spots = [];
-  for (let i = 0; i < 12; i++) {
-    const x = randRange(rng, 200, WORLD_SIZE - 200);
-    const y = randRange(rng, 200, 2850);
-    spots.push({ x, y, kind: i % 3 === 0 ? 'health' : 'ammo' });
+function $(id) { return document.getElementById(id); }
+
+function showOnly(id) {
+  for (const name of ['menu', 'pause', 'busted', 'wasted', 'failed', 'win']) {
+    const el = $('screen-' + name);
+    if (el) el.style.display = name === id ? 'flex' : 'none';
   }
-  G.pickups = spots;
-}
-
-function resetRun(fromSave) {
-  // Fresh world state for a new game or a continue.
-  G.cars = [];
-  G.peds = [];
-  G.combat = createCombat();
-  attachCombat(G);
-  G.particles = createParticles();
-  G.police = createPolice();
-  attachPolice(G);
-  G.missions = createMissions();
-  attachMissions(G);
-  spawnPickups();
-  spawnParkedCars(G);
-  spawnPeds(G, 18);
-  const start = SPOTS.playerStart;
-  G.player = createPlayer(start.x, start.y);
-  if (fromSave) {
-    G.player.money = fromSave.money || 0;
-    G.player.health = fromSave.health || 100;
-    G.player.ammo = fromSave.ammo || 48;
-    G.player.x = fromSave.x || start.x;
-    G.player.y = fromSave.y || start.y;
-    G.missions.done = fromSave.done || [false, false, false, false, false];
-    const idx = Math.min(fromSave.mission || 0, 4);
-    G.missions.index = idx;
-    G.missions.stage = fromSave.stage || 0;
-  }
-  G.camera.x = G.player.x;
-  G.camera.y = G.player.y;
-}
-
-// Attach the module functions as methods on the subsystem objects, so other
-// modules can call them through G (G.combat.enemyShoot, G.police.addWanted,
-// G.missions.onEnterCar, G.hud.showMessage) without import cycles.
-function attachCombat(g) {
-  g.combat.playerShoot = (gg, x, y, angle) => playerShoot(gg, x, y, angle);
-  g.combat.enemyShoot = (gg, x, y, angle, dmg) => enemyShoot(gg, x, y, angle, dmg);
-}
-
-function attachPolice(g) {
-  g.police.addWanted = (gg, n) => addWanted(gg, n);
-  g.police.setWanted = (gg, n) => setWanted(gg, n);
-  g.police.clearWanted = (gg) => clearWanted(gg);
-  g.police.busted = (gg) => busted(gg);
-  g.police.wasted = (gg) => wasted(gg);
-}
-
-function attachMissions(g) {
-  g.missions.onEnterCar = (gg, car) => onEnterCar(gg, car);
-  g.missions.onGangKilled = (gg, ped) => onGangKilled(gg, ped);
-}
-
-function attachHud(g) {
-  g.hud.showMessage = (gg, text, seconds) => showMessage(g.hud, text, seconds);
-  g.hud.showBanner = (gg, text) => showBanner(g.hud, text);
-  g.hud.showBusted = (gg) => showBusted(g.hud);
-  g.hud.showWasted = (gg) => showWasted(g.hud);
-  g.hud.showWin = (gg) => showWin(g.hud);
+  const hud = $('hud');
+  if (hud) hud.style.display = (id === null) ? 'block' : 'none';
 }
 
 function startGame(fromSave) {
-  G.audio.init();
-  resetRun(fromSave);
-  G.state = 'playing';
-  hideMenu(G.hud);
-  hideEnd(G.hud);
-  hidePause(G.hud);
+  ensureAudio();
+  resetRun();
+  buildCity();
+  S.player = freshPlayer(1000, 420);
+  S.cam.x = S.player.x - viewW / 2;
+  S.cam.y = S.player.y - viewH / 2;
+  spawnParkedCars();
+  spawnTraffic(12);
+  spawnPeds(22);
+  spawnPickup(1080, 480, 'health');
+  spawnPickup(1420, 1020, 'ammo');
+  spawnPickup(620, 1820, 'health');
+  let mission = 0;
   if (fromSave) {
-    const idx = G.missions.index;
-    if (idx < 5) {
-      G.missions.active = true;
-      const def = currentDef(G.missions);
-      if (def) G.hud.showMessage(G, def.briefing, 7);
+    const save = readSave();
+    if (save) {
+      S.money = save.money;
+      mission = Math.min(save.mission, MISSIONS.length - 1);
+      S.player.x = save.x;
+      S.player.y = save.y;
     }
-  } else {
-    startMission(G, 0);
   }
-}
-
-function retry() {
-  // Retry from the current mission: fresh health, no wanted, same progress.
-  const idx = Math.min(G.missions.index, 4);
-  const keepMoney = G.player.money;
-  const keepDone = G.missions.done.slice();
-  resetRun(null);
-  G.player.money = keepMoney;
-  G.missions.done = keepDone;
-  G.state = 'playing';
-  hideEnd(G.hud);
-  hideMenu(G.hud);
-  startMission(G, idx);
-  G.hud.showMessage(G, 'Mara: Again. From the top.', 4);
+  startMission(mission);
+  S.mode = 'playing';
+  showOnly(null);
+  sfxClick();
 }
 
 function quitToMenu() {
-  G.state = 'menu';
-  G.audio.siren(false);
-  G.audio.engine(0);
-  hideEnd(G.hud);
-  hidePause(G.hud);
-  showMenu(G.hud, G);
+  writeSave();
+  stopEngine();
+  S.mode = 'menu';
+  showOnly('menu');
+  $('btn-continue').style.display = hasSave() ? 'inline-block' : 'none';
 }
 
-function drawMarker(ctx) {
-  const M = G.missions;
-  if (!M.active) return;
-  const st = currentStage(M);
-  if (!st || !st.target) return;
-  const t = st.target;
-  const pulse = 1 + Math.sin(G.time * 4) * 0.15;
-  // A gold beacon column and a ground ring at the objective.
-  ctx.save();
-  ctx.globalAlpha = 0.25;
-  ctx.fillStyle = '#ffd94d';
-  ctx.fillRect(t.x - 4, t.y - 260, 8, 260);
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = '#ffd94d';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(t.x, t.y, 46 * pulse, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(t.x, t.y, 8, 0, Math.PI * 2);
-  ctx.fillStyle = '#ffd94d';
-  ctx.fill();
-  ctx.restore();
-  // Off-screen direction arrow at the screen edge.
-  const sx = t.x - G.camera.x + G.view.w / 2;
-  const sy = t.y - G.camera.y + G.view.h / 2;
-  if (sx < 40 || sx > G.view.w - 40 || sy < 40 || sy > G.view.h - 40) {
-    const cx = clamp(sx, 50, G.view.w - 50);
-    const cy = clamp(sy, 50, G.view.h - 50);
-    const a = Math.atan2(sy - G.view.h / 2, sx - G.view.w / 2);
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(a);
-    ctx.fillStyle = '#ffd94d';
-    ctx.beginPath();
-    ctx.moveTo(16, 0);
-    ctx.lineTo(-10, -9);
-    ctx.lineTo(-10, 9);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-function drawPickups(ctx) {
-  for (const pk of G.pickups) {
-    const bob = Math.sin(G.time * 3 + pk.x) * 2;
-    ctx.save();
-    ctx.translate(pk.x, pk.y + bob);
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.beginPath();
-    ctx.ellipse(0, 8, 12, 5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    if (pk.kind === 'ammo') {
-      ctx.fillStyle = '#2e7d32';
-      ctx.fillRect(-11, -11, 22, 22);
-      ctx.fillStyle = '#ffd94d';
-      ctx.font = 'bold 13px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('AMMO', 0, 4);
-    } else {
-      ctx.fillStyle = '#b71c1c';
-      ctx.fillRect(-11, -11, 22, 22);
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(-3, -8, 6, 16);
-      ctx.fillRect(-8, -3, 16, 6);
+function stageShot(shot) {
+  const p = S.player;
+  const L = S.world.landmarks;
+  if (shot === 'chase') {
+    // Downtown road, in a sports car, wanted 3, cruisers on the tail.
+    const car = makeCar('sport', 1400, 1000, 0);
+    S.cars.push(car);
+    enterCar(p, car);
+    p.x = 1400; p.y = 1000;
+    startMission(2);
+    S.missionTimer = 59;
+    setWanted(3);
+    for (let i = 0; i < 2; i++) {
+      const c = makeCar('police', 1400 - 160 - i * 90, 1000 + (i % 2 ? 24 : -24), 0);
+      c.policeChase = true;
+      S.cars.push(c);
     }
-    ctx.restore();
+    updatePolice(0.01);
+  } else if (shot === 'drive') {
+    const car = makeCar('sedan', 1000, 600, 0);
+    S.cars.push(car);
+    enterCar(p, car);
+    p.x = 1000; p.y = 600;
+    setWanted(0);
+  } else if (shot === 'mission') {
+    // On foot beside the red sports car, inside the gold mission ring.
+    p.x = 980; p.y = 260;
+    p.hp = 100;
+    setWanted(0);
+  } else if (shot === 'combat') {
+    // On foot at the Vulture turf, four gang members closing in.
+    startMission(3);
+    p.x = L.turf.x;
+    p.y = L.turf.y + 40;
+    p.hp = 100;
+    p.ammo = 12;
+    setWanted(0);
   }
-}
-
-function render() {
-  const shake = shakeOffset(G.particles);
-  ctx.clearRect(0, 0, G.view.w, G.view.h);
-  ctx.save();
-  ctx.translate(G.view.w / 2 - G.camera.x + shake.x, G.view.h / 2 - G.camera.y + shake.y);
-  drawWorld(ctx, G.camera, G.world, G.time);
-  drawMarker(ctx);
-  drawPickups(ctx);
-  drawCars(ctx, G, G.camera);
-  drawPeds(ctx, G, G.camera);
-  drawPlayer(ctx, G);
-  drawBullets(ctx, G);
-  drawParticles(ctx, G.particles);
-  ctx.restore();
+  S.mode = 'playing';
+  showOnly(null);
 }
 
 function update(dt) {
-  if (G.state === 'playing') {
-    if (G.input.hit('KeyP') || G.input.hit('Escape')) {
-      G.state = 'paused';
-      showPause(G.hud);
-      G.audio.engine(0);
-      G.audio.siren(false);
-    } else {
-      if (G.input.hit('KeyN') && !G.missions.active && G.missions.index < 5) {
-        startMission(G, G.missions.index);
+  S.time += dt;
+  if (S.bannerT > 0) S.bannerT -= dt;
+  if (S.mode !== 'playing') return;
+  if (wasPressed('KeyP') || wasPressed('Escape')) {
+    S.mode = 'paused';
+    showOnly('pause');
+    writeSave();
+    return;
+  }
+  updatePlayer(dt);
+  updateTraffic(dt);
+  updatePeds(dt);
+  // Gang members in attack range shoot at the player (line of sight only:
+  // they cannot shoot through buildings either).
+  for (const ped of S.peds) {
+    if (ped.gang && ped.state === 'attack' && S.player) {
+      ped.shootT -= dt;
+      if (ped.shootT <= 0 && !segmentHitsBuilding(ped.x, ped.y, S.player.x, S.player.y)) {
+        ped.shootT = 1.1 + Math.random() * 0.8;
+        fireBullet(ped.x, ped.y, angleTo(ped.x, ped.y, S.player.x, S.player.y), 'enemy', 9, 640);
       }
-      if (G.input.hit('KeyM')) {
-        G.audio.muted = !G.audio.muted;
-      }
-      updatePlayer(G, dt);
-      updateCars(G, dt);
-      updatePeds(G, dt);
-      updateCombat(G, dt);
-      updatePolice(G, dt);
-      updateMissions(G, dt);
-      updateParticles(G.particles, dt);
-      // Camera follows the player (or the car) with light smoothing.
-      const tx = G.player.x;
-      const ty = G.player.y;
-      G.camera.x += (tx - G.camera.x) * Math.min(1, dt * 5);
-      G.camera.y += (ty - G.camera.y) * Math.min(1, dt * 5);
-      G.camera.x = clamp(G.camera.x, G.view.w / 2 - 100, WORLD_SIZE - G.view.w / 2 + 100);
-      G.camera.y = clamp(G.camera.y, G.view.h / 2 - 100, WORLD_SIZE - G.view.h / 2 + 100);
-      updateHud(G.hud, G, dt);
-    }
-  } else if (G.state === 'paused') {
-    if (G.input.hit('KeyP') || G.input.hit('Escape')) {
-      G.state = 'playing';
-      hidePause(G.hud);
     }
   }
-  // Always consume edge-triggered keys, even on the frame we pause, so the
-  // same press cannot instantly resume the game on the next frame.
-  G.input.endFrame();
+  updatePolice(dt);
+  updateBullets(dt);
+  updateMissions(dt);
+  updateParticles(dt);
+  // Camera follows the player with shake.
+  const tx = clamp(S.player.x - viewW / 2, 0, Math.max(0, WORLD - viewW));
+  const ty = clamp(S.player.y - viewH / 2, 0, Math.max(0, WORLD - viewH));
+  S.cam.x += (tx - S.cam.x) * Math.min(1, dt * 6);
+  S.cam.y += (ty - S.cam.y) * Math.min(1, dt * 6);
+  const speedNorm = S.player.inCar ? Math.abs(S.player.inCar.speed) / 480 : S.player.speed / 285;
+  updateAudio(dt, clamp(speedNorm, 0, 1), S.wanted);
+  if (S.mode === 'busted') showOnly('busted');
+  if (S.mode === 'wasted') showOnly('wasted');
+  if (S.mode === 'failed') showOnly('failed');
+  if (S.mode === 'win') showOnly('win');
 }
 
-let last = performance.now();
-function loop(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-  G.time += dt;
+function drawMissionMarker(ctx) {
+  const obj = missionObjective();
+  if (!obj || S.mode !== 'playing') return;
+  const pulse = 1 + Math.sin(S.time * 4) * 0.12;
+  ctx.save();
+  ctx.strokeStyle = '#ffd34d';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(obj.x, obj.y, 34 * pulse, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,211,77,0.25)';
+  ctx.beginPath();
+  ctx.arc(obj.x, obj.y, 34 * pulse, 0, Math.PI * 2);
+  ctx.fill();
+  // Off-screen arrow pointing at the objective.
+  const sx = obj.x - S.cam.x, sy = obj.y - S.cam.y;
+  if (sx < 40 || sx > viewW - 40 || sy < 40 || sy > viewH - 40) {
+    const cx = clamp(sx, 50, viewW - 50);
+    const cy = clamp(sy, 50, viewH - 50);
+    const a = Math.atan2(sy - viewH / 2, sx - viewW / 2);
+    ctx.translate(cx, cy);
+    ctx.rotate(a);
+    ctx.fillStyle = '#ffd34d';
+    ctx.beginPath();
+    ctx.moveTo(16, 0);
+    ctx.lineTo(-10, -11);
+    ctx.lineTo(-10, 11);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function render() {
+  const shX = S.shake > 0 ? (Math.random() - 0.5) * S.shake : 0;
+  const shY = S.shake > 0 ? (Math.random() - 0.5) * S.shake : 0;
+  const camX = S.cam.x + shX;
+  const camY = S.cam.y + shY;
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, viewW, viewH);
+  ctx.save();
+  ctx.translate(-camX, -camY);
+  const view = { x0: camX - 40, y0: camY - 40, x1: camX + viewW + 40, y1: camY + viewH + 40 };
+  drawWorld(ctx, view);
+  drawMissionMarker(ctx);
+  drawPickups(ctx);
+  drawCars(ctx);
+  drawPeds(ctx);
+  drawCops(ctx);
+  drawPlayer(ctx);
+  drawBullets(ctx);
+  drawParticles(ctx, { x: camX, y: camY });
+  ctx.restore();
+  // Hold-up progress bar for the bank robbery.
+  if (S.mode === 'playing' && S.mission === 4 && S.missionStage === 1) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(viewW / 2 - 130, 84, 260, 22);
+    ctx.fillStyle = '#ffd34d';
+    ctx.fillRect(viewW / 2 - 128, 86, 256 * clamp(S.holdup / 5, 0, 1), 18);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('HOLD-UP IN PROGRESS', viewW / 2, 78);
+  }
+  if (S.mode === 'playing') updateHud();
+}
+
+function loop(t) {
+  requestAnimationFrame(loop);
+  const dt = Math.min(0.05, (t - lastT) / 1000 || 0.016);
+  lastT = t;
+  // Pause screen input. Consume the key so update() below does not see the
+  // same press and immediately re-pause the game.
+  if (S.mode === 'paused') {
+    if (wasPressed('KeyP') || wasPressed('Escape')) {
+      S.mode = 'playing';
+      showOnly(null);
+      consumePress('KeyP');
+      consumePress('Escape');
+    }
+  }
   update(dt);
   render();
-  requestAnimationFrame(loop);
+  endFrame();
+  window.__solmarReady = true;
 }
 
 function boot() {
   resize();
-  window.addEventListener('resize', resize);
-  G.world = buildWorld(1337);
-  G.audio = new SoundFX();
-  G.input = new Input(canvas);
-  G.hud = createHud();
-  bindHud(G.hud, document);
-  attachHud(G);
-  G.save = createSave();
-  G.particles = createParticles();
-  G.combat = createCombat();
-  attachCombat(G);
-  G.police = createPolice();
-  attachPolice(G);
-  G.missions = createMissions();
-  attachMissions(G);
-  G.player = createPlayer(SPOTS.playerStart.x, SPOTS.playerStart.y);
-  spawnPickups();
-  spawnParkedCars(G);
-  spawnPeds(G, 18);
-
-  // Menu buttons.
-  const H = G.hud.el;
-  H['btn-start'].addEventListener('click', () => {
-    G.audio.init();
-    G.audio.click();
-    G.save.clear();
-    startGame(null);
-  });
-  H['btn-continue'].addEventListener('click', () => {
-    G.audio.init();
-    G.audio.click();
-    const data = G.save.load();
-    startGame(data);
-  });
-  H['btn-resume'].addEventListener('click', () => {
-    G.audio.click();
-    G.state = 'playing';
-    hidePause(G.hud);
-  });
-  H['btn-restart'].addEventListener('click', () => {
-    G.audio.click();
-    hidePause(G.hud);
-    const idx = Math.min(G.missions.index, 4);
-    const keepMoney = G.player.money;
-    const keepDone = G.missions.done.slice();
-    resetRun(null);
-    G.player.money = keepMoney;
-    G.missions.done = keepDone;
-    G.state = 'playing';
-    startMission(G, idx);
-  });
-  H['btn-quit'].addEventListener('click', () => {
-    G.audio.click();
-    quitToMenu();
-  });
-  H['btn-retry'].addEventListener('click', () => {
-    G.audio.click();
-    retry();
-  });
-  H['btn-menu'].addEventListener('click', () => {
-    G.audio.click();
-    quitToMenu();
-  });
-
-  // Screenshot staging (?shot=chase|drive|mission|combat) skips the menu.
-  const shot = shotFromUrl();
+  initInput(canvas);
+  initHud();
+  buildCity();
+  S.player = freshPlayer(1000, 420);
+  S.cam.x = S.player.x - viewW / 2;
+  S.cam.y = S.player.y - viewH / 2;
+  spawnParkedCars();
+  spawnTraffic(10);
+  spawnPeds(18);
+  $('btn-start').addEventListener('click', () => startGame(false));
+  $('btn-continue').addEventListener('click', () => startGame(true));
+  $('btn-resume').addEventListener('click', () => { S.mode = 'playing'; showOnly(null); sfxClick(); });
+  $('btn-restart').addEventListener('click', () => startGame(false));
+  $('btn-quit').addEventListener('click', () => quitToMenu());
+  $('btn-retry').addEventListener('click', () => { retryMission(); showOnly(null); });
+  $('btn-retry-wasted').addEventListener('click', () => { retryMission(); showOnly(null); });
+  $('btn-menu-busted').addEventListener('click', () => quitToMenu());
+  $('btn-menu-wasted').addEventListener('click', () => quitToMenu());
+  $('btn-menu-failed').addEventListener('click', () => quitToMenu());
+  $('btn-retry-failed').addEventListener('click', () => { retryMission(); showOnly(null); });
+  $('btn-again').addEventListener('click', () => startGame(false));
+  $('btn-menu-win').addEventListener('click', () => quitToMenu());
+  $('btn-continue').style.display = hasSave() ? 'inline-block' : 'none';
+  // Staged screenshot mode: ?shot=chase|drive|mission|combat
+  const params = new URLSearchParams(window.location.search);
+  const shot = params.get('shot');
   if (shot) {
-    stageShot(G, shot);
-    hideMenu(G.hud);
-    G.audio.init();
+    S.shot = shot;
+    startGame(false);
+    stageShot(shot);
   } else {
-    showMenu(G.hud, G);
+    showOnly('menu');
   }
-
-  // Test hook: the play-test drives the game through this object.
-  window.__solmar = G;
+  window.__solmar = { S, startGame, quitToMenu, retryMission, ROAD_X };
   requestAnimationFrame(loop);
 }
 
