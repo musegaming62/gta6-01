@@ -1,267 +1,212 @@
-// Solmar — the player on foot. WASD movement with sprint stamina, mouse
-// aim, shooting and reloading, punching, stealing cars with E, and picking
-// up health/ammo. Driving itself lives in cars.js.
+// The player on foot for Solmar: movement, sprint, aiming, shooting, punching,
+// stealing cars and picking things up.
 
-import { S } from './state.js';
-import { clamp, dist, angleTo } from './util.js';
-import { resolveCircle } from './world.js';
-import { axis, isDown, wasPressed, mouse } from './input.js';
-import { nearestCar, driveCar, damageCar } from './cars.js';
-import { fireBullet } from './combat.js';
-import { blood, floatText, burst } from './particles.js';
-import { sfxPickup, sfxPunch, sfxCarDoor, sfxCash } from './audio.js';
+import { clamp, dist, angleTo, TWO_PI } from './util.js';
+import { resolveCircle, pointInBuilding } from './world.js';
+import { spawnBullet } from './combat.js';
+import { nearestCar, exitCar } from './cars.js';
+import { scarePeds } from './peds.js';
+import { playShot, playPunch, playPickup } from './audio.js';
 import { addWanted } from './police.js';
-import { nearestPed, knockDown, makePed } from './peds.js';
 
-const WALK_SPEED = 175;
-const SPRINT_SPEED = 285;
-
-export function updatePlayer(dt) {
-  const p = S.player;
-  if (!p) return;
-  if (p.hurtT > 0) p.hurtT -= dt;
-  if (p.punchT > 0) p.punchT -= dt;
-  if (p.punchCd > 0) p.punchCd -= dt;
-
-  // Aim follows the mouse (world space).
-  const wx = S.cam.x + mouse.x;
-  const wy = S.cam.y + mouse.y;
-  p.aimX = wx;
-  p.aimY = wy;
-  if (!p.inCar) p.angle = angleTo(p.x, p.y, wx, wy);
-
-  // Reload timer.
-  if (p.reloading > 0) {
-    p.reloadT -= dt;
-    if (p.reloadT <= 0) {
-      const need = p.mag - p.ammo;
-      const take = Math.min(need, p.reserve);
-      p.ammo += take;
-      p.reserve -= take;
-      p.reloading = 0;
-    }
-  }
-
-  if (p.inCar) {
-    updateDriving(p, dt);
-  } else {
-    updateOnFoot(p, dt);
-  }
-
-  // Pickups.
-  for (let i = S.pickups.length - 1; i >= 0; i--) {
-    const pk = S.pickups[i];
-    if (dist(p.x, p.y, pk.x, pk.y) < 30) {
-      if (pk.kind === 'health') {
-        p.hp = Math.min(p.maxHp, p.hp + 40);
-        floatText(p.x, p.y - 18, '+40 HP', '#7be07b');
-      } else if (pk.kind === 'ammo') {
-        p.reserve += 48;
-        floatText(p.x, p.y - 18, '+48 AMMO', '#ffd34d');
-      } else if (pk.kind === 'cash') {
-        S.money += pk.amount;
-        floatText(p.x, p.y - 18, '+$' + pk.amount, '#7be07b');
-        sfxCash();
-      }
-      sfxPickup();
-      S.pickups.splice(i, 1);
-    }
-  }
+export function createPlayer(x, y) {
+  return {
+    x, y,
+    angle: -Math.PI / 2,
+    hp: 100,
+    maxHp: 100,
+    stamina: 100,
+    ammo: 12,
+    ammoReserve: 60,
+    inCar: null,
+    speed: 0,
+    punchTimer: 0,
+    shootTimer: 0,
+    lastDamage: -99,
+    moving: false,
+  };
 }
 
-function updateOnFoot(p, dt) {
-  const mv = axis();
-  const sprint = isDown('ShiftLeft') || isDown('ShiftRight');
-  let speed = WALK_SPEED;
-  if (sprint && p.stamina > 0 && (mv.x !== 0 || mv.y !== 0)) {
-    speed = SPRINT_SPEED;
-    p.stamina = Math.max(0, p.stamina - 26 * dt);
-    p.sprinting = true;
-  } else {
-    p.sprinting = false;
-    p.stamina = Math.min(100, p.stamina + 16 * dt);
+export function updatePlayer(state, dt) {
+  const p = state.player;
+  const input = state.input;
+  if (p.inCar) return; // driving is handled by cars.js
+  p.punchTimer -= dt;
+  p.shootTimer -= dt;
+  // Aim at the mouse (world coordinates are set by main.js each frame).
+  const mx = input.mouse.wx || p.x;
+  const my = input.mouse.wy || p.y;
+  p.angle = angleTo(p.x, p.y, mx, my);
+  // Movement.
+  let mxv = 0;
+  let myv = 0;
+  if (input.down.has('KeyW') || input.down.has('ArrowUp')) myv -= 1;
+  if (input.down.has('KeyS') || input.down.has('ArrowDown')) myv += 1;
+  if (input.down.has('KeyA') || input.down.has('ArrowLeft')) mxv -= 1;
+  if (input.down.has('KeyD') || input.down.has('ArrowRight')) mxv += 1;
+  const sprinting = (input.down.has('ShiftLeft') || input.down.has('ShiftRight')) && p.stamina > 1;
+  const speed = sprinting ? 265 : 165;
+  const len = Math.hypot(mxv, myv);
+  p.moving = len > 0;
+  if (len > 0) {
+    p.x += (mxv / len) * speed * dt;
+    p.y += (myv / len) * speed * dt;
+    if (sprinting) p.stamina = Math.max(0, p.stamina - 26 * dt);
   }
-  const len = Math.hypot(mv.x, mv.y) || 1;
-  p.vx = (mv.x / len) * speed;
-  p.vy = (mv.y / len) * speed;
-  if (mv.x === 0 && mv.y === 0) { p.vx = 0; p.vy = 0; }
-  p.x += p.vx * dt;
-  p.y += p.vy * dt;
-  p.speed = Math.hypot(p.vx, p.vy);
-  resolveCircle(p, 12);
+  if (!sprinting) p.stamina = Math.min(100, p.stamina + 16 * dt);
+  const fixed = resolveCircle(state.city, p.x, p.y, 12);
+  p.x = fixed.x;
+  p.y = fixed.y;
   // Health regen out of combat.
-  if (S.time - S.lastCrime > 12 && p.hp > 0 && p.hp < p.maxHp) {
-    p.hp = Math.min(p.maxHp, p.hp + 2.5 * dt);
+  if (state.time - p.lastDamage > 6 && p.hp > 0 && p.hp < p.maxHp) {
+    p.hp = Math.min(p.maxHp, p.hp + 4 * dt);
   }
-
   // Shoot.
-  if (mouse.down && !p.reloading && p.punchT <= 0) {
-    if (S.time - p.lastShot > 0.16) {
-      if (p.ammo > 0) {
-        p.lastShot = S.time;
-        p.ammo--;
-        S.stats.shots++;
-        fireBullet(p.x + Math.cos(p.angle) * 14, p.y + Math.sin(p.angle) * 14, p.angle, 'player', 20, 820);
-        if (S.wanted < 1) addWanted(1);
-        S.lastCrime = S.time;
-      } else if (p.reserve > 0) {
-        startReload(p);
+  if (input.mouse.down && p.shootTimer <= 0) {
+    if (p.ammo > 0) {
+      p.shootTimer = 0.16;
+      p.ammo--;
+      state.stats.shots++;
+      const gx = p.x + Math.cos(p.angle) * 16;
+      const gy = p.y + Math.sin(p.angle) * 16;
+      spawnBullet(state, gx, gy, p.angle + (Math.random() - 0.5) * 0.05, { from: 'player', dmg: 14 });
+      playShot();
+      scarePeds(state, p.x, p.y, 380);
+      addWanted(state, 0.35);
+    } else if (p.ammoReserve > 0) {
+      // Auto reload when the magazine is empty.
+      reload(state);
+    }
+  }
+  // Reload.
+  if (input.pressed.has('KeyR')) reload(state);
+  // Punch.
+  if (input.pressed.has('KeyF') && p.punchTimer <= 0) {
+    p.punchTimer = 0.45;
+    playPunch();
+    const px = p.x + Math.cos(p.angle) * 26;
+    const py = p.y + Math.sin(p.angle) * 26;
+    for (const ped of state.peds) {
+      if (!ped.dead && dist(px, py, ped.x, ped.y) < 26) {
+        ped.hp -= 25;
+        ped.fleeing = true;
+        ped.target = { x: ped.x + (ped.x - p.x) * 2, y: ped.y + (ped.y - p.y) * 2 };
       }
     }
+    for (const cop of state.cops) {
+      if (dist(px, py, cop.x, cop.y) < 26) cop.hp -= 25;
+    }
+    addWanted(state, 0.3);
   }
-  if (wasPressed('KeyR') && p.ammo < p.mag && p.reserve > 0 && !p.reloading) {
-    startReload(p);
-  }
-  // Punch.
-  if (wasPressed('KeyF') && p.punchCd <= 0) {
-    p.punchT = 0.22;
-    p.punchCd = 0.45;
-    sfxPunch();
-    const target = nearestPed(p.x + Math.cos(p.angle) * 26, p.y + Math.sin(p.angle) * 26, 34, false);
-    if (target) {
-      knockDown(target);
-      blood(target.x, target.y);
-      addWanted(1);
+  // Enter / exit a car.
+  if (input.pressed.has('KeyE')) {
+    const car = nearestCar(state, p.x, p.y, 46, (c) => !c.dead);
+    if (car) {
+      p.inCar = car;
+      car.isPlayer = true;
+      car.isTraffic = false;
+      car.parked = false;
+      if (car.driver) {
+        // Throw the driver out onto the sidewalk.
+        car.driver = false;
+        state.peds.push({
+          id: 9000 + Math.floor(Math.random() * 999),
+          x: car.x + 30, y: car.y + 30, angle: 0, speed: 60, hp: 30,
+          gang: false, fleeing: true, dead: false, target: { x: car.x + 300, y: car.y + 300 },
+          wanderTimer: 2, shootTimer: 1, shirt: '#4a7ad4', pants: '#2a3a4a', skin: '#e8b88a',
+        });
+      }
+      addWanted(state, 1);
+      playPickup();
     }
   }
-  // Enter a car.
-  if (wasPressed('KeyE')) {
-    const car = nearestCar(p.x, p.y, 64);
-    if (car) enterCar(p, car);
-  }
-}
-
-function startReload(p) {
-  p.reloading = 1;
-  p.reloadT = 0.85;
-}
-
-export function enterCar(p, car) {
-  if (car.driver) {
-    // Throw the driver out as a pedestrian.
-    car.driver = false;
-    car.traffic = null;
-    const ped = makePed(car.x + 40, car.y + 20, false);
-    ped.state = 'flee';
-    ped.fleeT = 3;
-    S.peds.push(ped);
-  }
-  p.inCar = car;
-  p.x = car.x;
-  p.y = car.y;
-  sfxCarDoor();
-  if (!car.police) {
-    addWanted(1);
-    S.stats.carsStolen++;
-  }
-}
-
-function updateDriving(p, dt) {
-  const car = p.inCar;
-  if (!car || car.dead) {
-    p.inCar = null;
-    return;
-  }
-  const throttle = (isDown('KeyW') ? 1 : 0) + (isDown('KeyS') ? -0.7 : 0);
-  const steer = (isDown('KeyA') ? -1 : 0) + (isDown('KeyD') ? 1 : 0);
-  driveCar(car, throttle, steer, dt);
-  p.x = car.x;
-  p.y = car.y;
-  p.angle = car.angle;
-  p.speed = Math.abs(car.speed);
-  // Run over pedestrians.
-  for (const ped of S.peds) {
-    if (ped.state === 'down') continue;
-    if (dist(ped.x, ped.y, car.x, car.y) < 26 && Math.abs(car.speed) > 60) {
-      knockDown(ped);
-      blood(ped.x, ped.y);
-      addWanted(1);
+  // Pickups.
+  for (let i = state.pickups.length - 1; i >= 0; i--) {
+    const pk = state.pickups[i];
+    if (dist(p.x, p.y, pk.x, pk.y) < 24) {
+      if (pk.kind === 'health') p.hp = Math.min(p.maxHp, p.hp + 40);
+      if (pk.kind === 'ammo') p.ammoReserve += 24;
+      if (pk.kind === 'money') {
+        state.money += 50;
+      }
+      playPickup();
+      state.pickups.splice(i, 1);
     }
   }
-  // Exit the car.
-  if (wasPressed('KeyE')) {
-    const side = car.angle + Math.PI / 2;
-    p.x = car.x + Math.cos(side) * 34;
-    p.y = car.y + Math.sin(side) * 34;
-    resolveCircle(p, 12);
-    p.inCar = null;
-    sfxCarDoor();
-  }
-  // Shooting from a car is not allowed; the wheel is the weapon.
 }
 
-export function drawPlayer(ctx) {
-  const p = S.player;
-  if (!p || p.inCar) return;
+function reload(state) {
+  const p = state.player;
+  if (p.ammo >= 12 || p.ammoReserve <= 0) return;
+  const need = 12 - p.ammo;
+  const take = Math.min(need, p.ammoReserve);
+  p.ammo += take;
+  p.ammoReserve -= take;
+  p.shootTimer = Math.max(p.shootTimer, 0.35);
+}
+
+export function drawPlayer(ctx, state, cam) {
+  const p = state.player;
+  if (p.inCar || p.hp <= 0) return;
+  const sx = p.x - cam.x;
+  const sy = p.y - cam.y;
   ctx.save();
-  ctx.translate(p.x, p.y);
+  ctx.translate(sx, sy);
+  // Shadow.
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
   ctx.beginPath();
-  ctx.ellipse(0, 4, 10, 7, 0, 0, Math.PI * 2);
+  ctx.ellipse(1, 2, 10, 8, 0, 0, TWO_PI);
   ctx.fill();
   ctx.rotate(p.angle);
-  // Danny Voss: teal jacket, dark jeans.
-  ctx.fillStyle = '#0f766e';
+  // Legs and torso.
+  ctx.fillStyle = '#2a3a4a';
+  ctx.fillRect(-8, -4, 6, 8);
+  ctx.fillStyle = '#d46a4a';
   ctx.beginPath();
-  ctx.arc(0, 0, 10, 0, Math.PI * 2);
+  ctx.arc(0, 0, 9, 0, TWO_PI);
   ctx.fill();
-  ctx.fillStyle = '#f1c27d';
+  // Head and gun.
+  ctx.fillStyle = '#e8b88a';
   ctx.beginPath();
-  ctx.arc(6, 0, 5, 0, Math.PI * 2);
+  ctx.arc(5, 0, 5.5, 0, TWO_PI);
   ctx.fill();
-  // Gun.
   ctx.fillStyle = '#222';
-  ctx.fillRect(8, -2, 13, 3.5);
-  if (p.punchT > 0) {
-    ctx.fillStyle = '#f1c27d';
+  ctx.fillRect(8, -1.5, 12, 3);
+  // Muzzle flash while shooting.
+  if (p.shootTimer > 0.1) {
+    ctx.fillStyle = '#ffdd55';
     ctx.beginPath();
-    ctx.arc(16, 0, 5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  if (p.hurtT > 0) {
-    ctx.fillStyle = 'rgba(255,40,40,0.45)';
-    ctx.beginPath();
-    ctx.arc(0, 0, 13, 0, Math.PI * 2);
+    ctx.arc(22, 0, 6, 0, TWO_PI);
     ctx.fill();
   }
   ctx.restore();
-  if (p.reloading > 0) {
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 12px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText('RELOADING…', p.x, p.y - 20);
-  }
 }
 
-export function spawnPickup(x, y, kind, amount) {
-  S.pickups.push({ x, y, kind, amount: amount || 0, bob: Math.random() * 6 });
-}
-
-export function drawPickups(ctx) {
-  for (const pk of S.pickups) {
-    const bob = Math.sin(S.time * 3 + pk.bob) * 3;
+export function drawPickups(ctx, state, cam) {
+  for (const pk of state.pickups) {
+    const sx = pk.x - cam.x;
+    const sy = pk.y - cam.y;
+    const bob = Math.sin(state.time * 4 + pk.x) * 2;
     ctx.save();
-    ctx.translate(pk.x, pk.y + bob);
+    ctx.translate(sx, sy + bob);
     if (pk.kind === 'health') {
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(-9, -9, 18, 18);
-      ctx.fillStyle = '#e74c3c';
-      ctx.fillRect(-2.5, -7, 5, 14);
-      ctx.fillRect(-7, -2.5, 14, 5);
+      ctx.fillStyle = '#e8e8e8';
+      ctx.fillRect(-7, -7, 14, 14);
+      ctx.fillStyle = '#cc2222';
+      ctx.fillRect(-2, -6, 4, 12);
+      ctx.fillRect(-6, -2, 12, 4);
     } else if (pk.kind === 'ammo') {
-      ctx.fillStyle = '#f1c40f';
-      ctx.fillRect(-9, -7, 18, 14);
-      ctx.fillStyle = '#222';
-      ctx.font = 'bold 11px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText('AMMO', 0, 4);
+      ctx.fillStyle = '#d4b84a';
+      ctx.fillRect(-6, -8, 12, 16);
+      ctx.fillStyle = '#7a5a10';
+      ctx.fillRect(-6, -3, 12, 3);
     } else {
-      ctx.fillStyle = '#2ecc71';
+      ctx.fillStyle = '#ffd94a';
       ctx.beginPath();
-      ctx.arc(0, 0, 10, 0, Math.PI * 2);
+      ctx.arc(0, 0, 8, 0, TWO_PI);
       ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 12px Arial';
+      ctx.fillStyle = '#7a5a10';
+      ctx.font = 'bold 10px Arial';
       ctx.textAlign = 'center';
       ctx.fillText('$', 0, 4);
     }

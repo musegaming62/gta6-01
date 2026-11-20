@@ -1,193 +1,170 @@
-// Solmar — the story and the five missions. Mara, a fixer, hands Danny
-// Voss jobs to pay off a debt. Each mission has stages, an objective marker
-// on the map and minimap, a briefing line, and a cash reward.
+// The five-mission story for Solmar. Mara the fixer sends Danny Voss out to pay
+// off a debt, one job at a time. Each mission has stages, a map marker, a timer
+// where it matters, and a payout on completion.
 
-import { S } from './state.js';
-import { dist, clamp } from './util.js';
-import { makeCar, nearestCar } from './cars.js';
-import { spawnGang, nearestPed } from './peds.js';
-import { setWanted, addWanted } from './police.js';
-import { floatText, burst } from './particles.js';
-import { sfxMission, sfxFail, sfxCash } from './audio.js';
-import { spawnPickup } from './player.js';
+import { dist } from './util.js';
+import { spawnCar } from './cars.js';
+import { spawnPed } from './peds.js';
+import { addWanted } from './police.js';
+import { spawnText } from './particles.js';
+import { playJingle } from './audio.js';
 
 export const MISSIONS = [
-  { name: 'Hot Wheels', brief: 'Mara: "Steal a sports car and bring it to the chop shop. Quick and clean."', reward: 500 },
-  { name: 'The Pickup', brief: 'Mara: "Grab the package downtown, then run it to the port. No cops, no problems."', reward: 750 },
-  { name: 'Getaway Driver', brief: 'Mara: "The heat is on you already. Lose them and reach the safehouse in time."', reward: 1000 },
-  { name: 'Payback', brief: 'Mara: "The Vultures jumped one of ours. Go to their turf and settle it."', reward: 1500 },
-  { name: 'The Big Score', brief: 'Mara: "The National Bank. Five seconds inside, then run for the boat. This clears your debt."', reward: 5000 },
+  { name: 'Hot Wheels', briefing: 'Mara: Steal that red sports car and bring it to the chop shop. No questions.', reward: 500 },
+  { name: 'The Pickup', briefing: 'Mara: Grab the package downtown, then drop it at the port. Keep it quiet.', reward: 400 },
+  { name: 'Getaway Driver', briefing: 'Mara: The heat is on. Reach the safehouse before the clock runs out.', reward: 800 },
+  { name: 'Payback', briefing: 'Mara: The Vultures jumped one of ours. Go to their turf and finish all four.', reward: 1200 },
+  { name: 'The Big Score', briefing: 'Mara: Rob Solmar National Bank, then get to the harbour boat. This clears the debt.', reward: 5000 },
 ];
 
-let missionCar = null;
-let gang = [];
-
-export function missionObjective() {
-  const L = S.world.landmarks;
-  const m = S.mission;
-  if (m === 0) {
-    if (S.missionStage === 0) return missionCar ? { x: missionCar.x, y: missionCar.y, label: 'Steal the sports car' } : null;
-    return { x: L.chop.x, y: L.chop.y, label: 'Deliver to the Chop Shop' };
+export function startMission(state, index) {
+  const m = state.mission;
+  m.index = index;
+  m.stage = 0;
+  m.timer = 0;
+  m.done = false;
+  m.gangLeft = 0;
+  const L = state.city.landmarks;
+  if (index === 0) {
+    m.target = { x: state.city.missionCar.x, y: state.city.missionCar.y };
+    m.hint = 'Steal the red sports car';
+    // The mission sports car, parked by the start.
+    spawnCar(state, 'sports', state.city.missionCar.x, state.city.missionCar.y, -Math.PI / 2, { color: '#d43a2f', parked: true, driver: false, missionCar: true });
+  } else if (index === 1) {
+    m.target = { x: L.pickupA.x, y: L.pickupA.y };
+    m.hint = 'Pick up the package downtown';
+  } else if (index === 2) {
+    m.timer = 75;
+    m.target = { x: L.safehouse.x, y: L.safehouse.y };
+    m.hint = 'Reach the safehouse in time';
+    addWanted(state, 2);
+  } else if (index === 3) {
+    m.target = { x: L.turf.x, y: L.turf.y };
+    m.hint = 'Defeat the four Vultures';
+    m.gangLeft = 4;
+    for (let i = 0; i < 4; i++) {
+      spawnPed(state, L.turf.x + (i % 2) * 70 - 35, L.turf.y + Math.floor(i / 2) * 70 - 35, { gang: true });
+    }
+  } else if (index === 4) {
+    m.target = { x: L.bank.x, y: L.bank.y };
+    m.hint = 'Walk into Solmar National Bank';
   }
-  if (m === 1) {
-    if (S.missionStage === 0) return { x: L.pickup.x, y: L.pickup.y, label: 'Pick up the package' };
-    return { x: L.dock.x, y: L.dock.y, label: 'Deliver to the Port' };
-  }
-  if (m === 2) return { x: L.safe.x, y: L.safe.y, label: 'Reach the Safehouse' };
-  if (m === 3) return { x: L.turf.x, y: L.turf.y, label: 'Defeat the Vultures' };
-  if (m === 4) {
-    if (S.missionStage === 0) return { x: L.bank.x, y: L.bank.y, label: 'Enter the Bank' };
-    if (S.missionStage === 1) return { x: L.bank.x, y: L.bank.y, label: 'Hold up in progress…' };
-    return { x: L.boat.x, y: L.boat.y, label: 'Escape to the Boat' };
-  }
-  return null;
+  state.objective = MISSIONS[index].briefing;
 }
 
-export function startMission(i) {
-  S.mission = i;
-  S.missionStage = 0;
-  S.missionTimer = 0;
-  S.holdup = 0;
-  missionCar = null;
-  gang = [];
-  const M = MISSIONS[i];
-  S.missionMsg = M.brief;
-  S.banner = 'MISSION ' + (i + 1) + ' — ' + M.name.toUpperCase();
-  S.bannerT = 3.2;
-  sfxMission();
-  const L = S.world.landmarks;
-  const p = S.player;
-  if (i === 0) {
-    // A sports car waits two blocks from the player's start.
-    missionCar = makeCar('sport', 1020, 260, 0);
-    S.cars.push(missionCar);
-    spawnPickup(980, 300, 'ammo');
-  } else if (i === 2) {
-    S.missionTimer = 75;
-    setWanted(2);
-  } else if (i === 3) {
-    gang = spawnGang(4, L.turf.x, L.turf.y);
-  } else if (i === 4) {
-    setWanted(0);
-  }
+function completeMission(state) {
+  const m = state.mission;
+  const def = MISSIONS[m.index];
+  state.money += def.reward;
+  spawnText(state, state.player.x, state.player.y - 30, '+$' + def.reward, '#ffd94a');
+  playJingle();
+  state.objective = def.name + ' complete! +$' + def.reward;
+  m.done = true;
+  if (state.save) state.save();
 }
 
-function completeMission() {
-  const M = MISSIONS[S.mission];
-  S.money += M.reward;
-  S.stats.missionsDone++;
-  floatText(S.player.x, S.player.y - 26, '+$' + M.reward, '#7be07b');
-  burst(S.player.x, S.player.y, 18, '#ffd34d', 200, 0.7, 3);
-  sfxCash();
-  sfxMission();
-  S.banner = 'MISSION COMPLETE — +$' + M.reward;
-  S.bannerT = 3;
-  // Save progress.
-  try {
-    localStorage.setItem('solmar-save-v1', JSON.stringify({
-      money: S.money, mission: Math.min(S.mission + 1, MISSIONS.length - 1),
-      x: S.player.x, y: S.player.y,
-    }));
-  } catch (e) { /* storage unavailable */ }
-  if (S.mission >= MISSIONS.length - 1) {
-    S.mode = 'win';
+function nextMission(state) {
+  if (state.mode !== 'playing') return;
+  const next = state.mission.index + 1;
+  if (next >= MISSIONS.length) {
+    state.mode = 'win';
     return;
   }
-  startMission(S.mission + 1);
+  startMission(state, next);
 }
 
-export function failMission(reason) {
-  S.mode = 'failed';
-  S.failedReason = reason || 'failed';
-  sfxFail();
-}
-
-export function updateMissions(dt) {
-  const p = S.player;
-  if (!p || S.mode !== 'playing') return;
-  const L = S.world.landmarks;
-  const obj = missionObjective();
-  if (S.missionTimer > 0) {
-    S.missionTimer -= dt;
-    if (S.missionTimer <= 0) {
-      S.missionTimer = 0;
-      failMission('time');
+export function updateMissions(state, dt) {
+  const m = state.mission;
+  if (m.index < 0 || m.done) return;
+  const p = state.player;
+  const px = p.inCar ? p.inCar.x : p.x;
+  const py = p.inCar ? p.inCar.y : p.y;
+  // Mission 3 timer.
+  if (m.index === 2) {
+    m.timer -= dt;
+    if (m.timer <= 0) {
+      failMission(state, 'Out of time. Mara is not happy.');
       return;
     }
   }
-  const m = S.mission;
-  if (m === 0) {
-    if (S.missionStage === 0) {
-      if (p.inCar === missionCar) {
-        S.missionStage = 1;
-        S.missionMsg = 'Mara: "Nice wheels. Now bring it to the chop shop in Portside."';
+  const L = state.city.landmarks;
+  if (m.index === 0) {
+    if (m.stage === 0) {
+      // Stage 0: get in the mission sports car.
+      if (p.inCar && p.inCar.missionCar) {
+        m.stage = 1;
+        m.target = { x: L.chopShop.x, y: L.chopShop.y };
+        m.hint = 'Deliver the sports car to the chop shop';
+        state.objective = 'Deliver the car to the chop shop';
       }
-    } else if (p.inCar === missionCar && dist(p.x, p.y, L.chop.x, L.chop.y) < 70) {
-      completeMission();
+    } else if (dist(px, py, L.chopShop.x, L.chopShop.y) < 90) {
+      completeMission(state);
+      setTimeout(() => nextMission(state), 1200);
     }
-  } else if (m === 1) {
-    if (S.missionStage === 0) {
-      if (!p.inCar && dist(p.x, p.y, L.pickup.x, L.pickup.y) < 40) {
-        S.missionStage = 1;
-        S.missionMsg = 'Mara: "Package secured. Now the port — and keep it quiet."';
-        floatText(p.x, p.y - 20, 'PACKAGE', '#ffd34d');
+  } else if (m.index === 1) {
+    if (m.stage === 0) {
+      if (!p.inCar && dist(p.x, p.y, L.pickupA.x, L.pickupA.y) < 42) {
+        m.stage = 1;
+        m.target = { x: L.pickupB.x, y: L.pickupB.y };
+        m.hint = 'Deliver the package to the port';
+        state.objective = 'Deliver the package to the port';
       }
-    } else if (dist(p.x, p.y, L.dock.x, L.dock.y) < 70) {
-      completeMission();
+    } else if (dist(px, py, L.pickupB.x, L.pickupB.y) < 70) {
+      completeMission(state);
+      setTimeout(() => nextMission(state), 1200);
     }
-  } else if (m === 2) {
-    if (dist(p.x, p.y, L.safe.x, L.safe.y) < 70) {
-      setWanted(0);
-      completeMission();
+  } else if (m.index === 2) {
+    if (dist(px, py, L.safehouse.x, L.safehouse.y) < 80) {
+      completeMission(state);
+      setTimeout(() => nextMission(state), 1200);
     }
-  } else if (m === 3) {
-    const alive = gang.filter((g) => g.state !== 'down').length;
-    if (alive === 0 && gang.length > 0) {
-      completeMission();
+  } else if (m.index === 3) {
+    let left = 0;
+    for (const ped of state.peds) if (ped.gang && !ped.dead) left++;
+    m.gangLeft = left;
+    m.hint = 'Vultures left: ' + left;
+    if (left === 0) {
+      completeMission(state);
+      setTimeout(() => nextMission(state), 1200);
     }
-  } else if (m === 4) {
-    if (S.missionStage === 0) {
-      if (!p.inCar && dist(p.x, p.y, L.bank.x, L.bank.y) < 60) {
-        S.missionStage = 1;
-        S.missionMsg = 'Mara: "Stay inside the bank. Five seconds. The cops are coming."';
-        setWanted(4);
+  } else if (m.index === 4) {
+    if (m.stage === 0) {
+      if (!p.inCar && dist(p.x, p.y, L.bank.x, L.bank.y) < 80) {
+        m.stage = 1;
+        m.timer = 20;
+        m.target = { x: L.boat.x, y: L.boat.y };
+        m.hint = 'Hold up! Get to the harbour boat';
+        state.objective = 'The vault is open — escape to the harbour boat!';
+        addWanted(state, 4);
       }
-    } else if (S.missionStage === 1) {
-      if (dist(p.x, p.y, L.bank.x, L.bank.y) < 80) {
-        S.holdup += dt;
-        if (S.holdup >= 5) {
-          S.missionStage = 2;
-          S.missionMsg = 'Mara: "Got it! Now RUN to the boat at the harbour!"';
-          spawnPickup(L.bank.x, L.bank.y + 60, 'cash', 0);
-        }
-      } else {
-        S.holdup = Math.max(0, S.holdup - dt * 2);
+    } else {
+      m.timer -= dt;
+      if (dist(px, py, L.boat.x, L.boat.y) < 90) {
+        completeMission(state);
+        state.mode = 'win';
+      } else if (m.timer <= 0) {
+        failMission(state, 'The police locked the bank down. Run!');
+        m.stage = 0;
+        m.target = { x: L.bank.x, y: L.bank.y };
+        m.hint = 'Walk into Solmar National Bank';
       }
-    } else if (dist(p.x, p.y, L.boat.x, L.boat.y) < 70) {
-      completeMission();
     }
   }
-  // Mission marker ring pulse is drawn by main.js from missionObjective().
 }
 
-export function retryMission() {
-  const p = S.player;
-  p.hp = p.maxHp;
-  p.inCar = null;
-  // Put the player back near the current mission's start point.
-  const L = S.world.landmarks;
-  const starts = [
-    { x: 1000, y: 420 },
-    { x: 1400, y: 420 },
-    { x: 600, y: 1400 },
-    { x: 2600, y: 2600 },
-    { x: 1800, y: 300 },
-  ];
-  const s = starts[S.mission] || starts[0];
-  p.x = s.x;
-  p.y = s.y;
-  p.vx = 0; p.vy = 0;
-  setWanted(S.mission === 2 ? 2 : 0);
-  startMission(S.mission);
-  S.mode = 'playing';
+function failMission(state, message) {
+  state.objective = message;
+  state.mission.done = false;
+  // Restart the current mission from its start.
+  const idx = state.mission.index;
+  setTimeout(() => {
+    if (state.mode === 'playing') startMission(state, idx);
+  }, 1500);
+}
+
+// The current objective marker, for the HUD and the minimap.
+export function missionMarker(state) {
+  const m = state.mission;
+  if (m.index < 0 || m.done || !m.target) return null;
+  return m.target;
 }

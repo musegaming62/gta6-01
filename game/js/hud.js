@@ -1,118 +1,146 @@
-// Solmar — the HUD: health bar, money, wanted stars, ammo, objective text,
-// timer, banners, and the minimap canvas. DOM lives in index.html; this
-// module updates it every frame and draws the minimap.
+// The HUD for Solmar: health, money, wanted stars, ammo, objective text, the
+// mission banner and the minimap.
 
-import { S, WORLD } from './state.js';
-import { fmtMoney, fmtTime, clamp } from './util.js';
-import { missionObjective, MISSIONS } from './missions.js';
+import { WORLD, BEACH_Y, OCEAN_Y } from './world.js';
+import { missionMarker } from './missions.js';
 
-let el = {};
-let mini = null;
-let mctx = null;
+let els = null;
 
 export function initHud() {
-  el = {
-    hp: document.getElementById('hp-fill'),
-    hpText: document.getElementById('hp-text'),
+  els = {
+    healthFill: document.getElementById('health-fill'),
+    healthText: document.getElementById('health-text'),
     money: document.getElementById('money'),
     stars: document.getElementById('stars'),
     ammo: document.getElementById('ammo'),
     objective: document.getElementById('objective'),
+    missionName: document.getElementById('mission-name'),
     timer: document.getElementById('timer'),
     banner: document.getElementById('banner'),
-    missionName: document.getElementById('mission-name'),
-    msg: document.getElementById('mission-msg'),
+    minimap: document.getElementById('minimap'),
   };
-  mini = document.getElementById('minimap');
-  if (mini) mctx = mini.getContext('2d');
+  return els;
 }
 
-export function updateHud() {
-  const p = S.player;
-  if (!p) return;
-  if (el.hp) {
-    el.hp.style.width = clamp(p.hp, 0, 100) + '%';
-    el.hp.style.background = p.hp > 50 ? '#2ecc71' : p.hp > 25 ? '#f39c12' : '#e74c3c';
-  }
-  if (el.hpText) el.hpText.textContent = Math.ceil(p.hp);
-  if (el.money) el.money.textContent = fmtMoney(S.money);
-  if (el.stars) {
-    let s = '';
-    for (let i = 0; i < 5; i++) s += i < S.wanted ? '★' : '☆';
-    el.stars.textContent = s;
-    el.stars.style.color = S.wanted > 0 ? '#ffd34d' : 'rgba(255,255,255,0.5)';
-  }
-  if (el.ammo) {
-    el.ammo.textContent = p.inCar ? '—' : (p.reloading > 0 ? 'RELOADING' : p.ammo + ' / ' + p.reserve);
-  }
-  if (el.objective) {
-    const obj = missionObjective();
-    el.objective.textContent = obj ? obj.label : '';
-  }
-  if (el.timer) {
-    el.timer.textContent = S.missionTimer > 0 ? fmtTime(S.missionTimer) : '';
-    el.timer.style.color = S.missionTimer > 0 && S.missionTimer < 15 ? '#ff5b5b' : '#fff';
-  }
-  if (el.missionName) el.missionName.textContent = 'MISSION ' + (S.mission + 1) + '/5 — ' + MISSIONS[S.mission].name;
-  if (el.msg) el.msg.textContent = S.missionMsg;
-  if (el.banner) {
-    if (S.bannerT > 0) {
-      el.banner.textContent = S.banner;
-      el.banner.style.opacity = '1';
-    } else {
-      el.banner.style.opacity = '0';
-    }
-  }
-  drawMinimap();
+let bannerTimer = null;
+
+export function showBanner(text, ms) {
+  if (!els || !els.banner) return;
+  els.banner.textContent = text;
+  els.banner.classList.add('show');
+  if (bannerTimer) clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => els.banner.classList.remove('show'), ms || 2400);
 }
 
-function drawMinimap() {
-  if (!mctx || !S.world) return;
-  const W = mini.width, H = mini.height;
-  const k = W / WORLD;
-  mctx.fillStyle = '#1d2b1d';
-  mctx.fillRect(0, 0, W, H);
-  // Water + beach
-  mctx.fillStyle = '#2f7fc4';
-  mctx.fillRect(0, 3060 * k, W, H - 3060 * k);
-  mctx.fillStyle = '#e8d9a0';
-  mctx.fillRect(0, 2900 * k, W, (3060 - 2900) * k);
-  // Roads
-  mctx.fillStyle = '#3d3d42';
-  for (let i = 0; i < 8; i++) {
-    mctx.fillRect(200 * k + i * 400 * k - 3, 0, 6, H);
-    mctx.fillRect(0, 200 * k + i * 400 * k - 3, W, 6);
+export function updateHud(state) {
+  if (!els) return;
+  const p = state.player;
+  const hpPct = Math.max(0, Math.round((p.hp / p.maxHp) * 100));
+  els.healthFill.style.width = hpPct + '%';
+  els.healthFill.style.background = hpPct > 50 ? '#4ad47a' : hpPct > 25 ? '#e8b73a' : '#d43a2f';
+  els.healthText.textContent = hpPct;
+  els.money.textContent = '$' + state.money.toLocaleString('en-US');
+  const stars = Math.floor(state.wanted);
+  els.stars.textContent = '★'.repeat(stars) + '☆'.repeat(5 - stars);
+  els.stars.style.color = stars > 0 ? '#ffd94a' : '#888';
+  if (p.inCar) {
+    els.ammo.textContent = 'DRIVING';
+  } else {
+    els.ammo.textContent = 'AMMO ' + p.ammo + ' / ' + p.ammoReserve;
   }
-  // Buildings
-  mctx.fillStyle = 'rgba(220,220,220,0.7)';
-  for (const b of S.world.buildings) {
-    mctx.fillRect(b.x * k, b.y * k, Math.max(2, b.w * k), Math.max(2, b.h * k));
+  els.objective.textContent = state.objective || '';
+  const m = state.mission;
+  if (m.index >= 0) {
+    els.missionName.textContent = (m.done ? '✓ ' : '') + 'Mission ' + (m.index + 1) + '/5';
+  } else {
+    els.missionName.textContent = '';
   }
-  // Mission marker
-  const obj = missionObjective();
-  if (obj) {
-    const pulse = 4 + Math.sin(S.time * 5) * 2;
-    mctx.fillStyle = '#ffd34d';
-    mctx.beginPath();
-    mctx.arc(obj.x * k, obj.y * k, pulse, 0, Math.PI * 2);
-    mctx.fill();
+  if ((m.index === 2 || (m.index === 4 && m.stage === 1)) && m.timer > 0 && !m.done) {
+    const t = Math.max(0, Math.ceil(m.timer));
+    els.timer.textContent = '⏱ ' + Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+    els.timer.style.display = 'block';
+  } else {
+    els.timer.style.display = 'none';
   }
-  // Police dots
-  mctx.fillStyle = '#4d8bff';
-  for (const c of S.cops) {
-    if (c.state === 'down') continue;
-    mctx.fillRect(c.x * k - 1.5, c.y * k - 1.5, 3, 3);
+  drawMinimap(state);
+}
+
+function drawMinimap(state) {
+  const cv = els.minimap;
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const S = cv.width;
+  const k = S / WORLD;
+  ctx.clearRect(0, 0, S, S);
+  // Ground.
+  ctx.fillStyle = '#8a8a7a';
+  ctx.fillRect(0, 0, S, S);
+  // Districts.
+  for (const d of state.city.districts) {
+    ctx.fillStyle = d.ground;
+    ctx.fillRect(d.x0 * k, d.y0 * k, (d.x1 - d.x0) * k, (d.y1 - d.y0) * k);
   }
-  for (const car of S.cars) {
-    if (car.policeChase && !car.dead) mctx.fillRect(car.x * k - 1.5, car.y * k - 1.5, 3, 3);
+  // Ocean and beach.
+  ctx.fillStyle = '#3a7ac8';
+  ctx.fillRect(0, OCEAN_Y * k, S, S - OCEAN_Y * k);
+  ctx.fillStyle = '#d8c890';
+  ctx.fillRect(0, BEACH_Y * k, S, (OCEAN_Y - BEACH_Y) * k);
+  // Roads.
+  ctx.strokeStyle = '#3a3a3f';
+  ctx.lineWidth = Math.max(1, 76 * k * 0.6);
+  for (let i = 0; i <= 8; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * 400 * k, 0);
+    ctx.lineTo(i * 400 * k, S);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, i * 400 * k);
+    ctx.lineTo(S, i * 400 * k);
+    ctx.stroke();
   }
-  // Player
-  const p = S.player;
-  mctx.fillStyle = '#fff';
-  mctx.beginPath();
-  mctx.arc(p.x * k, p.y * k, 3.5, 0, Math.PI * 2);
-  mctx.fill();
-  mctx.strokeStyle = '#0f766e';
-  mctx.lineWidth = 2;
-  mctx.stroke();
+  // Buildings.
+  ctx.fillStyle = 'rgba(40,40,50,0.7)';
+  for (const b of state.city.buildings) {
+    ctx.fillRect(b.x * k, b.y * k, Math.max(1, b.w * k), Math.max(1, b.h * k));
+  }
+  // Mission marker.
+  const marker = missionMarker(state);
+  if (marker) {
+    const pulse = 3 + Math.sin(state.time * 5) * 1.5;
+    ctx.fillStyle = '#ffd94a';
+    ctx.beginPath();
+    ctx.arc(marker.x * k, marker.y * k, pulse + 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#7a5a10';
+    ctx.beginPath();
+    ctx.arc(marker.x * k, marker.y * k, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Police dots.
+  ctx.fillStyle = '#2a6aff';
+  for (const cop of state.cops) {
+    ctx.fillRect(cop.x * k - 1.5, cop.y * k - 1.5, 3, 3);
+  }
+  for (const car of state.cars) {
+    if (car.isPolice) ctx.fillRect(car.x * k - 1.5, car.y * k - 1.5, 3, 3);
+  }
+  // Player arrow.
+  const p = state.player;
+  const px = p.inCar ? p.inCar.x : p.x;
+  const py = p.inCar ? p.inCar.y : p.y;
+  const pa = p.inCar ? p.inCar.angle : p.angle;
+  ctx.save();
+  ctx.translate(px * k, py * k);
+  ctx.rotate(pa);
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(7, 0);
+  ctx.lineTo(-5, -4.5);
+  ctx.lineTo(-5, 4.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
 }

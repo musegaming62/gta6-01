@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Solmar — Open-World Crime Game</title>
+<title>Solmar — Open World Crime Game</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,74 +12,67 @@
 
 <div id="hud" style="display:none">
   <div id="hud-top">
-    <div id="hp-wrap"><div id="hp-fill"></div><span id="hp-text">100</span></div>
+    <div id="health-bar"><div id="health-fill"></div><span id="health-text">100</span></div>
     <div id="money">$0</div>
     <div id="stars">☆☆☆☆☆</div>
-    <div id="ammo">12 / 96</div>
+    <div id="ammo">AMMO 12 / 60</div>
   </div>
-  <div id="hud-mission">
-    <div id="mission-name">MISSION 1/5 — Hot Wheels</div>
+  <div id="hud-objective">
+    <div id="mission-name"></div>
     <div id="objective"></div>
-    <div id="timer"></div>
-    <div id="mission-msg"></div>
+    <div id="timer" style="display:none"></div>
   </div>
-  <canvas id="minimap" width="190" height="190"></canvas>
   <div id="banner"></div>
+  <canvas id="minimap" width="180" height="180"></canvas>
   <div id="controls-hint">WASD move · Shift sprint · Mouse aim · Click shoot · R reload · F punch · E enter/exit car · P pause</div>
 </div>
 
-<div id="screen-menu" class="screen">
+<div id="menu" class="overlay">
   <div class="panel">
     <h1>SOLMAR</h1>
-    <p class="tagline">An open-world crime story. Danny Voss owes money to the wrong people.<br>Five jobs. One city. No way out but through.</p>
-    <button id="btn-start" class="big">NEW GAME</button>
-    <button id="btn-continue" class="big">CONTINUE</button>
-    <p class="keys">WASD move · Shift sprint · Mouse aim · Click shoot · R reload · F punch<br>E steal / exit car · P pause · Save: progress is kept in this browser</p>
+    <p class="tagline">A sun-soaked city. A debt to pay. Five jobs from Mara.</p>
+    <p class="story">Danny Voss owes money to dangerous people. His fixer Mara has five jobs that
+    clear the debt — if he survives them. Steal cars, run packages, outrun the law,
+    settle scores and rob the Solmar National Bank.</p>
+    <button id="btn-start">▶ New Game</button>
+    <button id="btn-continue" style="display:none">Continue</button>
+    <p class="keys">WASD / arrows — move &amp; drive · Shift — sprint · Mouse — aim · Click — shoot ·
+    R — reload · F — punch · E — steal / exit car · P — pause</p>
   </div>
 </div>
 
-<div id="screen-pause" class="screen" style="display:none">
+<div id="pause" class="overlay" style="display:none">
   <div class="panel">
     <h1>PAUSED</h1>
-    <button id="btn-resume" class="big">RESUME</button>
-    <button id="btn-restart" class="big">RESTART</button>
-    <button id="btn-quit" class="big">QUIT TO MENU</button>
+    <button id="btn-resume">Resume</button>
+    <button id="btn-restart">Restart Game</button>
+    <button id="btn-quit">Quit to Menu</button>
   </div>
 </div>
 
-<div id="screen-busted" class="screen" style="display:none">
+<div id="busted" class="overlay" style="display:none">
   <div class="panel">
     <h1 class="red">BUSTED</h1>
-    <p class="tagline">The Solmar PD caught up with you.</p>
-    <button id="btn-retry" class="big">RETRY MISSION</button>
-    <button id="btn-menu-busted" class="big">MAIN MENU</button>
+    <p>The Solmar police caught up with you.</p>
+    <button id="btn-retry">Retry Mission</button>
+    <button id="btn-menu2">Quit to Menu</button>
   </div>
 </div>
 
-<div id="screen-wasted" class="screen" style="display:none">
+<div id="wasted" class="overlay" style="display:none">
   <div class="panel">
     <h1 class="red">WASTED</h1>
-    <p class="tagline">Danny Voss didn't make it out of Solmar.</p>
-    <button id="btn-retry-wasted" class="big">RETRY MISSION</button>
-    <button id="btn-menu-wasted" class="big">MAIN MENU</button>
+    <p>Danny Voss went down. Mara is not impressed.</p>
+    <button id="btn-retry2">Retry Mission</button>
   </div>
 </div>
 
-<div id="screen-failed" class="screen" style="display:none">
-  <div class="panel">
-    <h1 class="red">MISSION FAILED</h1>
-    <p class="tagline">Mara is not happy. Try it again.</p>
-    <button id="btn-retry-failed" class="big">RETRY MISSION</button>
-    <button id="btn-menu-failed" class="big">MAIN MENU</button>
-  </div>
-</div>
-
-<div id="screen-win" class="screen" style="display:none">
+<div id="win" class="overlay" style="display:none">
   <div class="panel">
     <h1 class="gold">YOU WIN</h1>
-    <p class="tagline">The Big Score is done. Danny sails out of Solmar a free man —<br>$5,000 richer, and the debt is paid.</p>
-    <button id="btn-again" class="big">PLAY AGAIN</button>
-    <button id="btn-menu-win" class="big">MAIN MENU</button>
+    <p>The Big Score is done. The boat is waiting, the debt is cleared, and
+    Danny Voss sails out of Solmar a free man.</p>
+    <button id="btn-again">Play Again</button>
   </div>
 </div>
 

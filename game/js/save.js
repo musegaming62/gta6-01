@@ -1,41 +1,37 @@
-// Solmar — save and continue via localStorage. Stores money, the next
-// mission to play, and the player's position. A save is written on every
-// mission completion and when the player pauses.
-
-import { S } from './state.js';
+// localStorage saves for Solmar: money, completed missions and player position.
 
 const KEY = 'solmar-save-v1';
 
-export function writeSave() {
+export function saveGame(state) {
   try {
-    localStorage.setItem(KEY, JSON.stringify({
-      money: S.money,
-      mission: S.mission,
-      x: S.player ? S.player.x : 1000,
-      y: S.player ? S.player.y : 420,
-    }));
-    return true;
-  } catch (e) {
-    return false;
-  }
+    const data = {
+      money: state.money,
+      missionIndex: state.mission.index,
+      player: { x: state.player.x, y: state.player.y },
+      savedAt: Date.now(),
+    };
+    localStorage.setItem(KEY, JSON.stringify(data));
+  } catch (e) { /* storage unavailable */ }
 }
 
-export function readSave() {
+export function loadGame() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
-    const d = JSON.parse(raw);
-    if (typeof d.money !== 'number' || typeof d.mission !== 'number') return null;
-    return d;
+    const data = JSON.parse(raw);
+    if (typeof data.money !== 'number' || typeof data.missionIndex !== 'number') return null;
+    return data;
   } catch (e) {
     return null;
   }
 }
 
 export function hasSave() {
-  return readSave() !== null;
+  return loadGame() !== null;
 }
 
 export function clearSave() {
-  try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ }
+  try {
+    localStorage.removeItem(KEY);
+  } catch (e) { /* ignore */ }
 }

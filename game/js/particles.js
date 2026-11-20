@@ -1,103 +1,85 @@
-// Solmar — particles, floating text, skid marks and screen shake. All
-// effects are data in S; main.js draws them after the world.
+// Particles, floating score text and screen shake for Solmar.
 
-import { S } from './state.js';
-import { rand, clamp } from './util.js';
+import { rand, TWO_PI } from './util.js';
 
-export function burst(x, y, n, color, speed, life, size) {
+export function spawnBurst(state, x, y, opts) {
+  const o = opts || {};
+  const n = o.count || 12;
+  const color = o.color || '#ffcc66';
+  const speed = o.speed || 140;
+  const life = o.life || 0.6;
+  const size = o.size || 3;
   for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const v = rand(0.3, 1) * speed;
-    S.parts.push({
-      x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
-      life: rand(0.5, 1) * life, maxLife: life, color, size: rand(0.6, 1.4) * size,
+    const a = rand(TWO_PI);
+    const s = rand(0.3, 1) * speed;
+    state.particles.push({
+      x, y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      life: rand(0.5, 1) * life,
+      maxLife: life,
+      size: rand(0.6, 1.4) * size,
+      color,
     });
   }
 }
 
-export function smoke(x, y) {
-  S.parts.push({
-    x: x + rand(-6, 6), y: y + rand(-6, 6), vx: rand(-8, 8), vy: rand(-26, -10),
-    life: rand(0.6, 1.2), maxLife: 1.2, color: 'rgba(90,90,90,0.5)', size: rand(6, 12), grow: true,
+export function spawnSmoke(state, x, y) {
+  state.particles.push({
+    x: x + rand(-6, 6), y: y + rand(-6, 6),
+    vx: rand(-8, 8), vy: rand(-30, -12),
+    life: rand(0.7, 1.3), maxLife: 1.3,
+    size: rand(5, 9), color: '#555555', smoke: true,
   });
 }
 
-export function sparks(x, y, n) { burst(x, y, n || 8, '#ffd34d', 260, 0.4, 2.5); }
-export function blood(x, y) { burst(x, y, 10, '#c0392b', 170, 0.5, 3); }
-export function muzzle(x, y, angle) {
-  for (let i = 0; i < 5; i++) {
-    const a = angle + rand(-0.35, 0.35);
-    const v = rand(200, 380);
-    S.parts.push({
-      x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
-      life: 0.09, maxLife: 0.09, color: i % 2 ? '#ffe27a' : '#ff9d2e', size: 2.5,
-    });
-  }
+export function spawnText(state, x, y, text, color) {
+  state.texts.push({ x, y, text, color: color || '#ffd94a', life: 1.6, maxLife: 1.6 });
 }
 
-export function floatText(x, y, text, color) {
-  S.floats.push({ x, y, text, color: color || '#fff', life: 1.4, maxLife: 1.4 });
+export function addShake(state, amount) {
+  state.shake = Math.min(18, state.shake + amount);
 }
 
-export function addSkid(x, y, angle) {
-  S.skids.push({ x, y, angle, life: 3 });
-  if (S.skids.length > 220) S.skids.shift();
-}
-
-export function addShake(amount) {
-  S.shake = clamp(S.shake + amount, 0, 22);
-}
-
-export function updateParticles(dt) {
-  for (let i = S.parts.length - 1; i >= 0; i--) {
-    const p = S.parts[i];
+export function updateParticles(state, dt) {
+  for (let i = state.particles.length - 1; i >= 0; i--) {
+    const p = state.particles[i];
     p.life -= dt;
-    if (p.life <= 0) { S.parts.splice(i, 1); continue; }
+    if (p.life <= 0) {
+      state.particles.splice(i, 1);
+      continue;
+    }
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     p.vx *= 0.96;
     p.vy *= 0.96;
-    if (p.grow) p.size += 14 * dt;
   }
-  for (let i = S.floats.length - 1; i >= 0; i--) {
-    const f = S.floats[i];
-    f.life -= dt;
-    f.y -= 34 * dt;
-    if (f.life <= 0) S.floats.splice(i, 1);
+  for (let i = state.texts.length - 1; i >= 0; i--) {
+    const t = state.texts[i];
+    t.life -= dt;
+    t.y -= 34 * dt;
+    if (t.life <= 0) state.texts.splice(i, 1);
   }
-  for (let i = S.skids.length - 1; i >= 0; i--) {
-    S.skids[i].life -= dt;
-    if (S.skids[i].life <= 0) S.skids.splice(i, 1);
-  }
-  S.shake = Math.max(0, S.shake - dt * 30);
+  state.shake = Math.max(0, state.shake - 40 * dt);
 }
 
-export function drawParticles(ctx, cam) {
-  for (const s of S.skids) {
-    ctx.save();
-    ctx.globalAlpha = Math.min(0.55, s.life * 0.25);
-    ctx.strokeStyle = '#222';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(s.x - Math.cos(s.angle) * 7, s.y - Math.sin(s.angle) * 7);
-    ctx.lineTo(s.x + Math.cos(s.angle) * 7, s.y + Math.sin(s.angle) * 7);
-    ctx.stroke();
-    ctx.restore();
-  }
-  for (const p of S.parts) {
-    ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
+export function drawParticles(ctx, state, cam) {
+  for (const p of state.particles) {
+    const a = Math.max(0, p.life / p.maxLife);
+    ctx.globalAlpha = p.smoke ? a * 0.45 : a;
     ctx.fillStyle = p.color;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.arc(p.x - cam.x, p.y - cam.y, p.size * (p.smoke ? 1 + (1 - a) : 1), 0, TWO_PI);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
-  ctx.font = 'bold 15px Arial';
   ctx.textAlign = 'center';
-  for (const f of S.floats) {
-    ctx.globalAlpha = clamp(f.life / f.maxLife, 0, 1);
-    ctx.fillStyle = f.color;
-    ctx.fillText(f.text, f.x, f.y);
+  ctx.font = 'bold 20px Arial, sans-serif';
+  for (const t of state.texts) {
+    const a = Math.max(0, t.life / t.maxLife);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = t.color;
+    ctx.fillText(t.text, t.x - cam.x, t.y - cam.y);
   }
   ctx.globalAlpha = 1;
 }
